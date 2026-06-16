@@ -10,9 +10,9 @@ import io.netty.handler.codec.MessageToByteEncoder;
 import lombok.extern.slf4j.Slf4j;
 
 /**
- * 自定义协议编码器，将 {@link MessagePacket} 按协议帧格式写入 {@link ByteBuf}。
+ * 自定义协议编码器，将 {@link MessagePacket} 按 V2 协议帧格式写入 {@link ByteBuf}。
  *
- * <p>编码顺序：Magic(4B) → Version(1B) → SerializationType(1B) → MsgType(1B) → Length(4B) → Body(NB)
+ * <p>V2 编码顺序：Magic(4B) → Version(1B) → SerializationType(1B) → MsgType(1B) → SequenceId(4B) → Length(4B) → Body(NB)
  *
  * <p>注意：Netty 的 {@link MessageToByteEncoder} 会自动管理 ByteBuf 的释放，
  * 业务代码中无需手动调用 ReferenceCountUtil.release()。
@@ -29,6 +29,7 @@ public class CustomProtocolEncoder extends MessageToByteEncoder<MessagePacket> {
         out.writeByte(header.getVersion());
         out.writeByte(header.getSerializationType());
         out.writeByte(header.getMsgType());
+        out.writeInt(header.getSequenceId());
 
         // 根据消息类型编码 Body
         byte[] bodyBytes;
@@ -38,7 +39,7 @@ public class CustomProtocolEncoder extends MessageToByteEncoder<MessagePacket> {
             // 心跳消息直接按字符串编码，不走序列化
             bodyBytes = packet.getBody().toString().getBytes();
         } else {
-            // 业务消息根据 serializationType 选择序列化器
+            // 业务/鉴权消息根据 serializationType 选择序列化器
             bodyBytes = Serializer.getSerializer(header.getSerializationType()).serialize(packet.getBody());
         }
 

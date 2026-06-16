@@ -42,4 +42,15 @@ public class NettyServerProperties {
     private int maxFrameLength = 10485760; // 10MB
     /** TCP SO_BACKLOG 参数，允许排队的连接数 */
     private int soBacklog = 1024;
+
+    /** TLS 是否启用 */
+    private boolean tlsEnabled = false;
+    /** TLS 独立端口（与明文端口分离） */
+    private int tlsPort = 9001;
+    /** TLS 证书路径（PKCS12/JKS） */
+    private String tlsCertPath;
+    /** TLS 证书密码 */
+    private String tlsCertPassword;
+    /** 鉴权超时时间（秒），连接建立后超过此时间未鉴权则断开 */
+    private int authTimeoutSeconds = 10;
 }

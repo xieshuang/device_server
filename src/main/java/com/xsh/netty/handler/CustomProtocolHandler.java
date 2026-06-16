@@ -1,9 +1,11 @@
 package com.xsh.netty.handler;
 
+import com.xsh.netty.protocol.ChannelAttributes;
 import com.xsh.netty.protocol.MessageHeader;
 import com.xsh.netty.protocol.MessagePacket;
 import com.xsh.netty.protocol.MsgType;
 import com.xsh.netty.serialize.Serializer;
+import com.xsh.netty.server.DeviceChannelManager;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
 import io.netty.handler.timeout.IdleStateEvent;
@@ -21,6 +23,13 @@ import lombok.extern.slf4j.Slf4j;
  *       连续空闲达到 maxIdleCount 次后断开连接，避免网络瞬时抖动造成误杀</li>
  * </ul>
  *
+ * <p>鉴权协同：
+ * <ul>
+ *   <li>此 Handler 位于 AuthHandler 之后，只有鉴权通过的消息才会到达此处</li>
+ *   <li>可通过 {@link ChannelAttributes#DEVICE_ID} 获取设备ID</li>
+ *   <li>AUTH_REQ/AUTH_RESP/AUTH_FAIL 由 AuthHandler 处理，不会到达此处</li>
+ * </ul>
+ *
  * <p>注意：此 Handler 由独立的 businessGroup 线程池执行，不阻塞 Netty I/O 线程。
  */
 @Slf4j
@@ -31,9 +40,28 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
 
     /** 最大允许连续空闲次数，超过此值将断开连接 */
     private final int maxIdleCount;
+    /** 设备连接管理器 */
+    private final DeviceChannelManager channelManager;
 
-    public CustomProtocolHandler(int maxIdleCount) {
+    public CustomProtocolHandler(int maxIdleCount, DeviceChannelManager channelManager) {
         this.maxIdleCount = maxIdleCount;
+        this.channelManager = channelManager;
+    }
+
+    @Override
+    public void channelActive(ChannelHandlerContext ctx) throws Exception {
+        // 连接建立时暂不注册，等鉴权成功后再注册
+        super.channelActive(ctx);
+    }
+
+    @Override
+    public void channelInactive(ChannelHandlerContext ctx) throws Exception {
+        // 连接断开时注销设备
+        String deviceId = ctx.channel().attr(ChannelAttributes.DEVICE_ID).get();
+        if (deviceId != null) {
+            channelManager.unregister(deviceId, ctx.channel());
+        }
+        super.channelInactive(ctx);
     }
 
     @Override
@@ -42,10 +70,11 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
         ctx.channel().attr(IDLE_COUNTER).set(0);
 
         MessageHeader header = packet.getHeader();
+        String deviceId = ctx.channel().attr(ChannelAttributes.DEVICE_ID).get();
 
         // 处理心跳请求：回复心跳响应
         if (header.getMsgType() == MsgType.HEARTBEAT_REQ) {
-            log.debug("Heartbeat from {}", ctx.channel().remoteAddress());
+            log.debug("心跳请求: deviceId={}, 远程地址={}", deviceId, ctx.channel().remoteAddress());
             MessagePacket response = new MessagePacket();
             MessageHeader resHeader = new MessageHeader();
             resHeader.setMsgType(MsgType.HEARTBEAT_RESP);
@@ -56,9 +85,16 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
             return;
         }
 
-        // 处理业务数据：TODO 分发到具体业务逻辑
+        // 处理 ACK 确认消息
+        if (header.getMsgType() == MsgType.ACK) {
+            log.debug("收到ACK: deviceId={}, sequenceId={}", deviceId, header.getSequenceId());
+            // ACK 由 PendingAckManager 处理，此处不再转发
+            return;
+        }
+
+        // 处理业务数据：TODO 分发到具体业务逻辑（P1-2 MessageDispatcher）
         if (header.getMsgType() == MsgType.BUSINESS) {
-            log.info("Business data from {}: {}", ctx.channel().remoteAddress(), packet.getBody());
+            log.info("业务数据: deviceId={}, 数据={}", deviceId, packet.getBody());
         }
     }
 
@@ -77,11 +113,11 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
             counter++;
             ctx.channel().attr(IDLE_COUNTER).set(counter);
 
-            log.warn("Channel idle detected: {}, count: {}", ctx.channel().remoteAddress(), counter);
+            String deviceId = ctx.channel().attr(ChannelAttributes.DEVICE_ID).get();
+            log.warn("空闲检测: deviceId={}, 计数={}", deviceId, counter);
 
             if (counter >= maxIdleCount) {
-                log.error("Channel {} idle {} times, closing connection",
-                        ctx.channel().remoteAddress(), maxIdleCount);
+                log.error("连续空闲{}次，关闭连接: deviceId={}", maxIdleCount, deviceId);
                 ctx.close();
             }
         } else {
@@ -91,7 +127,8 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
 
     @Override
     public void exceptionCaught(ChannelHandlerContext ctx, Throwable cause) {
-        log.error("Exception in custom protocol handler", cause);
+        String deviceId = ctx.channel().attr(ChannelAttributes.DEVICE_ID).get();
+        log.error("业务处理器异常: deviceId={}", deviceId, cause);
         ctx.close();
     }
 }

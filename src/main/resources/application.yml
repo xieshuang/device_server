@@ -11,3 +11,29 @@ netty:
     max-idle-count: 3
     max-frame-length: 10485760  # 10MB
     so-backlog: 1024
+    tls-enabled: false
+    tls-port: 9001
+    tls-cert-path: ""
+    tls-cert-password: ""
+    auth-timeout-seconds: 10
+
+spring:
+  data:
+    redis:
+      host: tx-redis-sh-test.xuexizhiwang.com
+      port: 16371
+      password: Ilodkaldiel%#I89Lhaldki
+      lettuce:
+        pool:
+          max-active: 16
+          max-idle: 8
+          min-idle: 2
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, prometheus
+  endpoint:
+    health:
+      show-details: always

@@ -1,0 +1,13 @@
+server:
+  port: 8080
+
+netty:
+  server:
+    port: 9000
+    boss-threads: 1
+    worker-threads: 0
+    business-threads: 64
+    idle-timeout-seconds: 5
+    max-idle-count: 3
+    max-frame-length: 10485760  # 10MB
+    so-backlog: 1024

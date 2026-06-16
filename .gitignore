@@ -1,0 +1,31 @@
+# Maven
+target/
+
+# IDE
+.idea/
+*.iml
+*.iws
+*.ipr
+.vscode/
+.settings/
+.project
+.classpath
+.factorypath
+
+# Build
+out/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Log
+*.log
+logs/
+
+# Package
+*.jar
+*.war
+*.ear
+!src/main/resources/**/*.jar

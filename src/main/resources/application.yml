@@ -16,6 +16,18 @@ netty:
     tls-cert-path: ""
     tls-cert-password: ""
     auth-timeout-seconds: 10
+    # Kafka 消息持久化配置
+    kafka-enabled: false
+    kafka-topic: device-messages
+    # 限流配置
+    rate-limit-enabled: true
+    rate-limit-global-permits: 10000   # 全局每秒令牌数
+    rate-limit-device-permits: 100     # 单设备每秒令牌数
+    rate-limit-close-on-limit: false   # 限流后是否关闭连接
+    # WebSocket 配置
+    websocket-enabled: true
+    websocket-path: /ws
+    websocket-max-frame-size: 65536
 
 spring:
   data:
@@ -28,6 +40,15 @@ spring:
           max-active: 16
           max-idle: 8
           min-idle: 2
+  # Kafka 配置
+  kafka:
+    bootstrap-servers: localhost:9092
+    producer:
+      acks: all
+      retries: 3
+      batch-size: 16384
+      linger-ms: 5
+      enable-idempotence: true
 
 management:
   endpoints:

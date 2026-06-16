@@ -53,4 +53,28 @@ public class NettyServerProperties {
     private String tlsCertPassword;
     /** 鉴权超时时间（秒），连接建立后超过此时间未鉴权则断开 */
     private int authTimeoutSeconds = 10;
+
+    // ---- Kafka 配置 ----
+    /** Kafka 消息持久化开关，false 时 BusinessMessageHandler 仅打日志 */
+    private boolean kafkaEnabled = false;
+    /** Kafka 统一 Topic 名称 */
+    private String kafkaTopic = "device-messages";
+
+    // ---- 限流配置 ----
+    /** 限流开关 */
+    private boolean rateLimitEnabled = true;
+    /** 全局每秒允许的消息数（令牌桶速率） */
+    private double rateLimitGlobalPermits = 10000.0;
+    /** 单设备每秒允许的消息数 */
+    private double rateLimitDevicePermits = 100.0;
+    /** 限流后是否关闭连接（false=丢弃消息保持连接，true=直接关闭） */
+    private boolean rateLimitCloseOnLimit = false;
+
+    // ---- WebSocket 配置 ----
+    /** WebSocket 开关 */
+    private boolean websocketEnabled = true;
+    /** WebSocket 升级路径 */
+    private String websocketPath = "/ws";
+    /** WebSocket 最大帧大小 */
+    private int websocketMaxFrameSize = 65536;
 }

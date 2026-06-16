@@ -1,0 +1,90 @@
+{
+  "__inputs": [],
+  "__requires": [{ "type": "grafana", "id": "grafana", "name": "Grafana", "version": "10.0.0" }],
+  "id": null,
+  "uid": "device-server",
+  "title": "Device Server 监控看板",
+  "tags": ["netty", "iot", "device-server"],
+  "timezone": "browser",
+  "schemaVersion": 38,
+  "version": 1,
+  "refresh": "10s",
+  "time": { "from": "now-15m", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1, "title": "在线设备数", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 0 },
+      "targets": [{ "expr": "netty_connections_active", "refId": "A", "legendFormat": "在线设备" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 80 }] } } }
+    },
+    {
+      "id": 2, "title": "待确认消息数", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 0 },
+      "targets": [{ "expr": "netty_ack_pending", "refId": "A", "legendFormat": "待确认" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "yellow", "value": 1000 }, { "color": "red", "value": 5000 }] } } }
+    },
+    {
+      "id": 3, "title": "鉴权成功/失败", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 12, "y": 0 },
+      "targets": [
+        { "expr": "rate(netty_auth_success_total[5m])", "refId": "A", "legendFormat": "成功/s" },
+        { "expr": "rate(netty_auth_fail_total[5m])", "refId": "B", "legendFormat": "失败/s" }
+      ]
+    },
+    {
+      "id": 4, "title": "限流拒绝", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 0 },
+      "targets": [{ "expr": "rate(netty_rate_limited_total[5m])", "refId": "A", "legendFormat": "拒绝/s" }],
+      "fieldConfig": { "defaults": { "color": { "mode": "thresholds" }, "thresholds": { "steps": [{ "color": "green", "value": null }, { "color": "red", "value": 1 }] } } }
+    },
+    {
+      "id": 10, "title": "Kafka 发送", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 0, "y": 4 },
+      "targets": [
+        { "expr": "rate(netty_kafka_send_success_total[5m])", "refId": "A", "legendFormat": "成功/s" },
+        { "expr": "rate(netty_kafka_send_fail_total[5m])", "refId": "B", "legendFormat": "失败/s" }
+      ]
+    },
+    {
+      "id": 11, "title": "WebSocket 连接", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 6, "y": 4 },
+      "targets": [{ "expr": "rate(netty_websocket_connection_total[5m])", "refId": "A", "legendFormat": "连接/s" }]
+    },
+    {
+      "id": 5, "title": "心跳 QPS", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 8 },
+      "targets": [
+        { "expr": "rate(netty_heartbeat_request_total[1m])", "refId": "A", "legendFormat": "请求" },
+        { "expr": "rate(netty_heartbeat_response_total[1m])", "refId": "B", "legendFormat": "响应" }
+      ]
+    },
+    {
+      "id": 6, "title": "业务消息 QPS", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 8 },
+      "targets": [{ "expr": "rate(netty_business_message_total[1m])", "refId": "A", "legendFormat": "QPS" }]
+    },
+    {
+      "id": 7, "title": "消息处理延迟 P50/P95/P99", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 16 },
+      "targets": [
+        { "expr": "histogram_quantile(0.50, sum(rate(netty_business_message_latency_seconds_bucket[5m])) by (le))", "refId": "A", "legendFormat": "P50" },
+        { "expr": "histogram_quantile(0.95, sum(rate(netty_business_message_latency_seconds_bucket[5m])) by (le))", "refId": "B", "legendFormat": "P95" },
+        { "expr": "histogram_quantile(0.99, sum(rate(netty_business_message_latency_seconds_bucket[5m])) by (le))", "refId": "C", "legendFormat": "P99" }
+      ]
+    },
+    {
+      "id": 8, "title": "鉴权趋势", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 16 },
+      "targets": [
+        { "expr": "rate(netty_auth_success_total[5m])", "refId": "A", "legendFormat": "成功/s" },
+        { "expr": "rate(netty_auth_fail_total[5m])", "refId": "B", "legendFormat": "失败/s" }
+      ]
+    },
+    {
+      "id": 9, "title": "限流拒绝趋势", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
+      "targets": [{ "expr": "rate(netty_rate_limited_total[5m])", "refId": "A", "legendFormat": "拒绝/s" }]
+    }
+  ]
+}

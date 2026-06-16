@@ -1,11 +1,14 @@
 package com.xsh.netty.codec;
 
+import com.xsh.netty.config.HandlerBeanContainer;
+import com.xsh.netty.handler.WebSocketBusinessHandler;
 import com.xsh.netty.server.NettyServerProperties;
 import io.netty.buffer.ByteBuf;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import io.netty.handler.codec.http.HttpObjectAggregator;
 import io.netty.handler.codec.http.HttpServerCodec;
+import io.netty.handler.codec.http.websocketx.WebSocketServerProtocolHandler;
 import io.netty.handler.codec.mqtt.MqttDecoder;
 import io.netty.handler.codec.mqtt.MqttEncoder;
 import lombok.extern.slf4j.Slf4j;
@@ -19,9 +22,15 @@ import java.util.List;
  * <p>支持的协议：
  * <ul>
  *   <li>自定义协议（魔数 0x44565352 "DVSR"）</li>
- *   <li>HTTP（GET/POST/PUT/DELETE/HEAD/PATCH/OPTIONS）</li>
+ *   <li>HTTP / WebSocket（GET/POST/PUT/DELETE/HEAD/PATCH/OPTIONS）</li>
  *   <li>MQTT（CONNECT 报文类型 0x10）</li>
  * </ul>
+ *
+ * <p>WebSocket 升级检测：
+ * <p>WebSocket 升级请求以 HTTP 格式开头（如 GET /ws HTTP/1.1 + Upgrade: websocket），
+ * 但仅凭前4字节无法区分普通 HTTP 和 WebSocket。因此在 HTTP 分支中统一添加
+ * HttpServerCodec + HttpObjectAggregator，由后续 Handler 根据请求头中的
+ * Upgrade 字段决定走 HTTP 还是 WebSocket 路径。
  *
  * <p>工作原理：使用 {@link ByteBuf#getByte(int)} 读取数据但不移动读指针，
  * 判断协议后通过 {@link io.netty.channel.ChannelPipeline#addAfter} 动态插入编解码器，
@@ -33,9 +42,11 @@ import java.util.List;
 public class MultiProtocolDetector extends ByteToMessageDecoder {
 
     private final NettyServerProperties properties;
+    private final HandlerBeanContainer handlerBeanContainer;
 
-    public MultiProtocolDetector(NettyServerProperties properties) {
+    public MultiProtocolDetector(NettyServerProperties properties, HandlerBeanContainer handlerBeanContainer) {
         this.properties = properties;
+        this.handlerBeanContainer = handlerBeanContainer;
     }
 
     @Override
@@ -63,12 +74,24 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
             return;
         }
 
-        // 2. HTTP 协议：匹配 GET/POST/PUT/DELETE/HEAD/PATCH/OPTIONS 请求方法
+        // 2. HTTP/WebSocket 协议：匹配 GET/POST/PUT/DELETE/HEAD/PATCH/OPTIONS 请求方法
+        // WebSocket 升级请求也是 HTTP 格式，先走 HTTP 编解码，后续根据 Upgrade 头区分
         if (isHttp(b0, b1, b2, b3)) {
-            log.info("检测到 HTTP 协议，来源：{}", ctx.channel().remoteAddress());
+            log.info("检测到 HTTP/WebSocket 协议，来源：{}", ctx.channel().remoteAddress());
             ctx.pipeline().addAfter(selfName, "httpCodec", new HttpServerCodec());
             ctx.pipeline().addAfter("httpCodec", "httpAggregator",
                     new HttpObjectAggregator(65536));
+
+            // WebSocket 启用时，添加 WebSocket 协议处理器
+            if (properties.isWebsocketEnabled()) {
+                ctx.pipeline().addAfter("httpAggregator", "wsProtocolHandler",
+                        new WebSocketServerProtocolHandler(
+                                properties.getWebsocketPath(), null, true,
+                                properties.getWebsocketMaxFrameSize()));
+                ctx.pipeline().addAfter("wsProtocolHandler", "wsBusinessHandler",
+                        new WebSocketBusinessHandler(handlerBeanContainer));
+            }
+
             ctx.pipeline().remove(this);
             return;
         }

@@ -135,8 +135,9 @@ public class CustomProtocolDecoder extends ByteToMessageDecoder {
             // ACK 消息：body 为确认的 sequenceId 的字符串形式
             packet.setBody(new String(bodyBytes));
         } else {
-            // 业务消息根据 serializationType 选择序列化器进行反序列化
-            packet.setBody(Serializer.getSerializer(serializationType).deserialize(String.class, bodyBytes));
+            // 业务消息：保留原始字节数组，延迟到 MessageHandler 中按需反序列化
+            packet.setRawBody(bodyBytes);
+            packet.setBody(bodyBytes);
         }
 
         out.add(packet);

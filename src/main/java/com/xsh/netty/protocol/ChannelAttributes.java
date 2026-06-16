@@ -17,4 +17,7 @@ public final class ChannelAttributes {
 
     /** 鉴权状态：true=已认证，false=未认证 */
     public static final AttributeKey<Boolean> AUTHENTICATED = AttributeKey.valueOf("authenticated");
+
+    /** 协商后的协议版本号，默认2（V2），V1 客户端协商后设为1 */
+    public static final AttributeKey<Byte> NEGOTIATED_VERSION = AttributeKey.valueOf("negotiatedVersion");
 }

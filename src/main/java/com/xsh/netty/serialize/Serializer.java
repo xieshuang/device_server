@@ -43,6 +43,9 @@ public interface Serializer {
         if (type == JSON_SERIALIZATION) {
             return JsonSerializer.INSTANCE;
         }
-        throw new IllegalArgumentException("Unsupported serialization type: " + type);
+        if (type == PROTOBUF_SERIALIZATION) {
+            return ProtobufSerializer.INSTANCE;
+        }
+        throw new IllegalArgumentException("不支持的序列化类型: " + type);
     }
 }

@@ -16,14 +16,17 @@ import java.util.concurrent.TimeUnit;
  * <p>注册的指标：
  * <ul>
  *   <li>netty.connections.active — 当前活跃连接数</li>
- *   <li>netty.connections.total — 历史总连接数</li>
- *   <li>netty.heartbeat.request.count — 心跳请求计数</li>
- *   <li>netty.heartbeat.response.count — 心跳响应计数</li>
- *   <li>netty.business.message.count — 业务消息计数</li>
- *   <li>netty.auth.success.count — 鉴权成功计数</li>
- *   <li>netty.auth.fail.count — 鉴权失败计数</li>
- *   <li>netty.ack.pending.count — 待确认消息数</li>
+ *   <li>netty.ack.pending — 待确认消息数</li>
+ *   <li>netty.heartbeat.request — 心跳请求计数</li>
+ *   <li>netty.heartbeat.response — 心跳响应计数</li>
+ *   <li>netty.business.message — 业务消息计数</li>
+ *   <li>netty.auth.success — 鉴权成功计数</li>
+ *   <li>netty.auth.fail — 鉴权失败计数</li>
  *   <li>netty.business.message.latency — 消息处理延迟</li>
+ *   <li>netty.kafka.send.success — Kafka 发送成功计数</li>
+ *   <li>netty.kafka.send.fail — Kafka 发送失败计数</li>
+ *   <li>netty.rate.limited — 限流拒绝计数（在 RateLimiterService 中注册）</li>
+ *   <li>netty.websocket.connection — WebSocket 连接计数</li>
  * </ul>
  */
 @Component
@@ -35,6 +38,9 @@ public class NettyMetricsBinder {
     private final Counter authSuccessCounter;
     private final Counter authFailCounter;
     private final Timer businessLatencyTimer;
+    private final Counter kafkaSendSuccessCounter;
+    private final Counter kafkaSendFailCounter;
+    private final Counter wsConnectionCounter;
 
     public NettyMetricsBinder(MeterRegistry registry,
                               DeviceChannelManager channelManager,
@@ -74,6 +80,20 @@ public class NettyMetricsBinder {
         businessLatencyTimer = Timer.builder("netty.business.message.latency")
                 .description("业务消息处理延迟")
                 .register(registry);
+
+        // Kafka 发送指标
+        kafkaSendSuccessCounter = Counter.builder("netty.kafka.send.success")
+                .description("Kafka 发送成功计数")
+                .register(registry);
+
+        kafkaSendFailCounter = Counter.builder("netty.kafka.send.fail")
+                .description("Kafka 发送失败计数")
+                .register(registry);
+
+        // WebSocket 连接指标
+        wsConnectionCounter = Counter.builder("netty.websocket.connection")
+                .description("WebSocket 连接计数")
+                .register(registry);
     }
 
     public void incrementHeartbeatReq() {
@@ -101,5 +121,17 @@ public class NettyMetricsBinder {
      */
     public void recordBusinessLatency(long durationNanos) {
         businessLatencyTimer.record(durationNanos, TimeUnit.NANOSECONDS);
+    }
+
+    public void incrementKafkaSendSuccess() {
+        kafkaSendSuccessCounter.increment();
+    }
+
+    public void incrementKafkaSendFail() {
+        kafkaSendFailCounter.increment();
+    }
+
+    public void incrementWsConnection() {
+        wsConnectionCounter.increment();
     }
 }

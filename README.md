@@ -1,6 +1,6 @@
 # Device Server - 工业级 Netty 多协议设备接入服务器
 
-基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持自定义协议、HTTP、MQTT 三种协议接入，内置设备鉴权、心跳检测、消息确认、TLS 加密等工业级特性。
+基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持自定义协议、HTTP、MQTT、WebSocket 四种协议接入，内置设备鉴权、心跳检测、消息确认、TLS 加密、Kafka 持久化、流量控制等工业级特性。
 
 ---
 
@@ -14,7 +14,9 @@
 | Jackson | Spring Boot 内置 | JSON 序列化 |
 | Spring Data Redis | Spring Boot 内置 | Lettuce 异步客户端，设备鉴权密钥存储 |
 | Caffeine | Spring Boot 内置 | 本地缓存，待确认消息 TTL 管理 |
-| Spring Kafka | Spring Boot 内置 | 消息持久化（P2 阶段） |
+| Spring Kafka | Spring Boot 内置 | 消息持久化，统一 Topic + deviceId 分区 |
+| Guava | 33.0.0-jre | 令牌桶限流（RateLimiter） |
+| Protobuf | 3.25.3 | 二进制序列化（高性能，与 JSON 并存） |
 | Micrometer + Prometheus | Spring Boot 内置 | 可观测性指标暴露 |
 | Lombok | Spring Boot 内置 | 减少样板代码 |
 
@@ -35,15 +37,19 @@
                                │
                          [MultiProtocolDetector] ← 协议嗅探，动态路由
                                │
-                    ┌──────────┼──────────┐
-                    ▼          ▼          ▼
-             [CustomDecoder] [HttpCodec] [MqttDecoder]
-                    │          │          │
-             [AuthHandler]    │          │
-                    │          │          │
-             [CustomHandler] [HttpHandler] [MqttHandler]
+                    ┌──────────┼──────────┬──────────┐
+                    ▼          ▼          ▼          ▼
+             [CustomDecoder] [HttpCodec] [MqttDecoder] [WebSocket升级]
+                    │          │          │              │
+             [AuthHandler]    │          │         [WSHandler]
+                    │          │          │              │
+             [RateLimitHandler]│         │              │
+                    │          │          │              │
+             [CustomHandler] [HttpHandler] [MqttHandler] [WSBizHandler]
+                    │                                        │
+             [MessageDispatcher] ←──────────────────────────┘
                     │
-             [MessageDispatcher] ← 消息路由分发
+             [BusinessMessageHandler] → [Kafka]
                     │
              [businessGroup]     ← 独立线程池，不阻塞 I/O
 ```
@@ -90,6 +96,7 @@ V2 固定头部共 **15 字节**，V1 固定头部共 **11 字节**（无 Sequen
 | 5 | AUTH_RESP | 鉴权成功响应 |
 | 6 | AUTH_FAIL | 鉴权失败响应 |
 | 7 | ACK | 消息确认 |
+| 8 | VERSION_NEGOTIATE | 协议版本协商 |
 
 ### 2.5 设备鉴权机制
 
@@ -181,7 +188,7 @@ DeviceChannelManager.unregister(deviceId, channel)
 - 未配置证书时自动使用自签名证书（仅限开发环境）
 - `SslHandler` 在 Pipeline 最前端，解密后不影响协议探测
 
-### 2.11 消息路由分发
+### 2.11 消息路由分发 + Kafka 持久化
 
 ```
 CustomProtocolHandler.channelRead0()
@@ -190,13 +197,67 @@ CustomProtocolHandler.channelRead0()
 MessageDispatcher.dispatch(ctx, deviceId, packet)
         │
         ├── msgType=3 → BusinessMessageHandler (Spring Bean)
+        │   └── 构造 KafkaMessageEnvelope → KafkaProducerService.sendAsync()
         ├── msgType=X → 自定义 MessageHandler 实现
         └── 未注册 → 默认日志处理
 ```
 
 新增业务类型只需实现 `MessageHandler` 接口并注册为 Spring Bean，无需修改核心 Handler。
+Kafka 启用时自动异步写入统一 Topic `device-messages`，key=deviceId 保证同一设备消息有序。
 
-### 2.12 断线重连（客户端）
+### 2.12 流量控制（令牌桶）
+
+```
+CustomProtocolHandler
+        │
+        ▼
+RateLimitHandler（鉴权后插入 Pipeline）
+        │
+        ├── 心跳消息 → 无限流，直接放行
+        ├── 未认证 → 无限流（由 AuthHandler 管理）
+        └── 业务消息 → RateLimiterService.tryAcquire(deviceId)
+                ├── 全局限流：单一 RateLimiter（默认 10000/s）
+                ├── 单设备限流：Caffeine 缓存 deviceId→RateLimiter（默认 100/s）
+                ├── 通过 → ctx.fireChannelRead(packet)
+                └── 拒绝 → 丢弃消息/关闭连接（可配置）
+```
+
+### 2.13 WebSocket 支持
+
+```
+MultiProtocolDetector（HTTP 分支）
+        │
+        ├── WebSocket 启用 → 动态插入：
+        │   HttpServerCodec → HttpObjectAggregator → WebSocketServerProtocolHandler
+        │   → WebSocketBusinessHandler
+        │
+        └── WebSocket 禁用 → 走原有 HTTP 路径（HttpBusinessHandler）
+```
+
+WebSocket 升级路径 `/ws`，二进制帧体格式：serializationType(1B) + msgType(1B) + sequenceId(4B) + payload(NB)。
+消息路由复用 MessageDispatcher，与自定义协议共享处理逻辑。
+
+### 2.14 Protobuf 序列化
+
+通过协议帧头部的 `serializationType=2` 标识 Protobuf 编码，`ProtobufSerializer` 实现 `Serializer` 接口。
+`.proto` 文件通过 `protobuf-maven-plugin` 编译生成 Java 类，运行时 Class→Parser 动态映射。
+
+### 2.15 协议版本协商
+
+```
+AuthHandler 允许 VERSION_NEGOTIATE(msgType=8) 提前通过
+        │
+        ▼
+VersionNegotiator.negotiate(clientVersion)
+        │
+        ├── clientVersion < 1 → 返回 -1（不兼容），关闭连接
+        └── clientVersion ≥ 1 → 返回 min(clientVersion, 2)，绑定到 Channel 属性
+```
+
+协商后版本绑定到 `ChannelAttributes.NEGOTIATED_VERSION`，编解码器按此版本执行。
+不支持 VERSION_NEGOTIATE 的客户端默认使用 V2。
+
+### 2.16 断线重连（客户端）
 
 ```
 连接断开 → 触发 channelInactive
@@ -217,37 +278,52 @@ src/main/java/com/xsh/netty/
 ├── DeviceServerApplication.java          # Spring Boot 主启动类
 ├── protocol/
 │   ├── MessageHeader.java                # 协议头定义（V1/V2 兼容，含 sequenceId）
-│   ├── MessagePacket.java                # 消息包（头部 + Body）
-│   ├── MsgType.java                      # 消息类型常量（7种）
+│   ├── MessagePacket.java                # 消息包（头部 + Body + rawBody）
+│   ├── MsgType.java                      # 消息类型常量（8种）
 │   ├── AuthRequest.java                  # 鉴权请求体（deviceId + timestamp + token）
-│   └── ChannelAttributes.java            # Channel 属性键（deviceId, authenticated）
+│   ├── ChannelAttributes.java            # Channel 属性键（deviceId, authenticated, negotiatedVersion）
+│   ├── VersionInfo.java                  # 协议版本常量（SERVER_MAX/MIN_VERSION）
+│   └── VersionNegotiator.java            # 版本协商器（min(clientVersion, SERVER_MAX_VERSION)）
 ├── serialize/
-│   ├── Serializer.java                   # 序列化接口
-│   └── JsonSerializer.java               # JSON 序列化实现
+│   ├── Serializer.java                   # 序列化接口（JSON=1, Protobuf=2）
+│   ├── JsonSerializer.java               # JSON 序列化实现
+│   └── ProtobufSerializer.java           # Protobuf 序列化实现（Class→Parser 动态映射）
 ├── codec/
 │   ├── CustomProtocolEncoder.java        # V2 协议编码器
 │   ├── CustomProtocolDecoder.java        # V1/V2 自适应解码器（粘包半包 + 帧长度校验）
-│   └── MultiProtocolDetector.java        # 多协议探测器（动态路由）
+│   ├── MultiProtocolDetector.java        # 多协议探测器（自定义/HTTP/WS/MQTT 动态路由）
+│   └── WebSocketFrameCodec.java          # WebSocket 帧 ↔ MessagePacket 转换器
 ├── auth/
 │   ├── AuthService.java                  # 鉴权服务接口
-│   └── RedisAuthService.java             # Redis 异步鉴权实现（HMAC-MD5）
+│   ├── HmacUtils.java                    # HMAC-MD5 工具类
+│   └── RedisAuthService.java             # Redis 异步鉴权实现
 ├── handler/
-│   ├── AuthHandler.java                  # 鉴权处理器（鉴权成功后自动移除）
-│   ├── CustomProtocolHandler.java        # 自定义协议业务处理器（心跳 + 连接管理 + ACK）
+│   ├── AuthHandler.java                  # 鉴权处理器（鉴权+版本协商后自动移除）
+│   ├── CustomProtocolHandler.java        # 自定义协议业务处理器（心跳 + ACK + Dispatcher）
+│   ├── BusinessMessageHandler.java       # 业务消息处理器（Kafka 持久化 + 指标记录）
+│   ├── WebSocketBusinessHandler.java     # WebSocket 业务处理器（复用 Dispatcher）
 │   ├── HttpBusinessHandler.java          # HTTP 业务处理器
 │   └── MqttBusinessHandler.java          # MQTT 业务处理器
 ├── server/
-│   ├── NettyServerProperties.java        # 配置属性类（含 TLS、鉴权超时）
+│   ├── NettyServerProperties.java        # 配置属性类（含 TLS/Kafka/限流/WebSocket）
 │   ├── DeviceChannelManager.java         # 设备连接管理器（踢旧保新 + 定向推送）
 │   ├── DeviceSession.java                # 设备会话信息
 │   └── PendingAckManager.java            # 待确认消息管理器（Caffeine TTL）
 ├── dispatcher/
 │   ├── MessageHandler.java               # 业务消息处理器接口
 │   └── MessageDispatcher.java            # 消息分发器（按 msgType 路由）
+├── ratelimit/
+│   ├── RateLimiterService.java           # 限流服务（全局+单设备双维度令牌桶）
+│   └── RateLimitHandler.java             # Pipeline 限流 Handler
+├── kafka/
+│   ├── KafkaProducerService.java         # Kafka 异步发送服务
+│   ├── KafkaProducerConfig.java          # Kafka Producer 配置
+│   └── KafkaMessageEnvelope.java         # 消息信封（headers + payload + receivedAt）
 ├── config/
-│   ├── NettyServerBootstrap.java         # 服务启动引导（TLS + 鉴权 + 优雅停机）
-│   ├── NettyMetricsBinder.java           # Micrometer 指标注册
-│   └── DispatcherConfig.java             # 消息分发器配置（Spring Bean 自动注册）
+│   ├── NettyServerBootstrap.java         # 服务启动引导（TLS + 鉴权 + 限流 + WS + 优雅停机）
+│   ├── NettyMetricsBinder.java           # Micrometer 指标注册（含 Kafka/限流/WS 指标）
+│   ├── DispatcherConfig.java             # 消息分发器配置（Spring Bean 自动注册）
+│   └── HandlerBeanContainer.java         # Handler 依赖容器（解决 Netty Handler Bean 注入）
 └── client/
     ├── TestClient.java                   # 交互式测试客户端（鉴权 + 断线重连）
     └── StressTestClient.java             # 压力测试客户端（万级连接）
@@ -338,6 +414,10 @@ management:
 | `netty_auth_success_total` | Counter | 鉴权成功计数 |
 | `netty_auth_fail_total` | Counter | 鉴权失败计数 |
 | `netty_business_message_latency_seconds` | Timer | 消息处理延迟分布 |
+| `netty_kafka_send_success_total` | Counter | Kafka 发送成功计数 |
+| `netty_kafka_send_fail_total` | Counter | Kafka 发送失败计数 |
+| `netty_rate_limited_total` | Counter | 限流拒绝计数 |
+| `netty_websocket_connection_total` | Counter | WebSocket 连接计数 |
 
 ---
 
@@ -419,6 +499,7 @@ java com.xsh.netty.client.TestClient 192.168.1.100 9000 test-device-001 my-secre
 |------|----------|------|
 | 自定义协议 | TestClient / 网络调试助手 | 发送十六进制报文，需先鉴权 |
 | HTTP | Postman / curl | 发送 GET/POST 请求到 9000 端口 |
+| WebSocket | WebSocket 客户端 / 浏览器控制台 | `ws://localhost:9000/ws`，首条消息 AUTH_REQ |
 | MQTT | MQTTX | 连接 9000 端口，发送 CONNECT 报文 |
 
 ### 7.5 TLS 测试
@@ -540,14 +621,46 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 | V1.0 基础框架 | ✅ 已完成 | 编解码、多协议接入、心跳检测、Spring Boot 集成 |
 | P0 生产必须 | ✅ 已完成 | 设备鉴权(Redis+HMAC)、连接管理(踢旧保新)、消息确认(Caffeine TTL)、TLS 加密 |
 | P1 运维必备 | ✅ 已完成 | 可观测性(Micrometer+Prometheus)、消息路由分发、断线重连(指数退避) |
-| P2 规模化 | 🔜 计划中 | 流量控制(令牌桶)、消息持久化(Kafka)、协议版本协商 |
-| P3 扩展功能 | 🔜 计划中 | 完整 MQTT 协议、WebSocket 支持、Protobuf 序列化、设备管理后台 |
+| P2 规模化 | ✅ 已完成 | 流量控制(令牌桶)、消息持久化(Kafka)、协议版本协商 |
+| P3 扩展功能 | ✅ 已完成 | WebSocket 支持、Protobuf 序列化、Grafana 看板（MQTT 暂不接入） |
 
 ---
 
 ## 11. 版本变更记录
 
-### V2.0 (当前)
+### V3.0 (当前)
+
+**新增功能：**
+- Kafka 消息持久化：BusinessMessageHandler → 统一Topic `device-messages`，deviceId 分区保序
+- 流量控制：全局+单设备双维度令牌桶（Guava RateLimiter），心跳不限流
+- WebSocket 支持：复用 HTTP 端口升级，二进制帧体与自定义协议共享 MessagePacket 格式
+- Grafana 看板：Dashboard JSON 模板，8 块面板覆盖所有核心指标
+- Protobuf 序列化：`serializationType=2` 自动路由，`.proto` 编译生成 Java 类
+- 协议版本协商：VERSION_NEGOTIATE(msgType=8) 动态协商，向后兼容
+- HandlerBeanContainer：解决 Netty Handler 无法注入 Spring Bean 的架构问题
+- BusinessMessageHandler：Spring Bean 实现 MessageHandler 接口，Dispatcher 自动注册
+- RateLimitHandler：Pipeline 插入式限流，心跳不限流
+
+**遗留修复：**
+- CustomProtocolHandler BUSINESS 消息接入 MessageDispatcher
+- ACK 处理接入 PendingAckManager.ack()
+- NettyMetricsBinder 指标接入各 Handler（AuthHandler、CustomProtocolHandler）
+- 业务消息反序列化改为 byte[] 透传（延迟到 MessageHandler 按需执行）
+
+**新增依赖：**
+- guava（令牌桶限流 RateLimiter）
+- protobuf-java + protobuf-maven-plugin（Protobuf 序列化）
+
+**新增配置项：**
+- `netty.server.kafka-enabled` / `kafka-topic`
+- `netty.server.rate-limit-enabled` / `rate-limit-global-permits` / `rate-limit-device-permits` / `rate-limit-close-on-limit`
+- `netty.server.websocket-enabled` / `websocket-path` / `websocket-max-frame-size`
+- `spring.kafka.bootstrap-servers` / `producer.*`
+
+**新增 Grafana Dashboard：**
+- `src/main/resources/grafana/device-server-dashboard.json`
+
+### V2.0
 
 **协议变更：**
 - 协议帧头部从 11 字节扩展到 15 字节，新增 `sequenceId`(4字节) 字段

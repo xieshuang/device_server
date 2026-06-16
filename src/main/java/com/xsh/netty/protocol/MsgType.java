@@ -32,6 +32,8 @@ public final class MsgType {
     public static final byte AUTH_FAIL = 6;
     /** 消息确认 */
     public static final byte ACK = 7;
+    /** 版本协商（客户端声明支持版本，服务端回复协商结果） */
+    public static final byte VERSION_NEGOTIATE = 8;
 
     /**
      * 判断是否为心跳类型消息（请求或响应）。

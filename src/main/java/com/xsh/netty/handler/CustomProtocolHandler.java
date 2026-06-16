@@ -1,10 +1,10 @@
 package com.xsh.netty.handler;
 
+import com.xsh.netty.config.HandlerBeanContainer;
 import com.xsh.netty.protocol.ChannelAttributes;
 import com.xsh.netty.protocol.MessageHeader;
 import com.xsh.netty.protocol.MessagePacket;
 import com.xsh.netty.protocol.MsgType;
-import com.xsh.netty.serialize.Serializer;
 import com.xsh.netty.server.DeviceChannelManager;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.channel.SimpleChannelInboundHandler;
@@ -23,11 +23,17 @@ import lombok.extern.slf4j.Slf4j;
  *       连续空闲达到 maxIdleCount 次后断开连接，避免网络瞬时抖动造成误杀</li>
  * </ul>
  *
+ * <p>消息处理流程：
+ * <ul>
+ *   <li>心跳消息：直接回复 PONG</li>
+ *   <li>ACK 确认消息：调用 PendingAckManager 确认</li>
+ *   <li>业务消息：通过 MessageDispatcher 路由到对应的 MessageHandler</li>
+ * </ul>
+ *
  * <p>鉴权协同：
  * <ul>
  *   <li>此 Handler 位于 AuthHandler 之后，只有鉴权通过的消息才会到达此处</li>
  *   <li>可通过 {@link ChannelAttributes#DEVICE_ID} 获取设备ID</li>
- *   <li>AUTH_REQ/AUTH_RESP/AUTH_FAIL 由 AuthHandler 处理，不会到达此处</li>
  * </ul>
  *
  * <p>注意：此 Handler 由独立的 businessGroup 线程池执行，不阻塞 Netty I/O 线程。
@@ -42,10 +48,14 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
     private final int maxIdleCount;
     /** 设备连接管理器 */
     private final DeviceChannelManager channelManager;
+    /** Handler 依赖容器，提供 Dispatcher/Metrics/PendingAckManager 等服务 */
+    private final HandlerBeanContainer container;
 
-    public CustomProtocolHandler(int maxIdleCount, DeviceChannelManager channelManager) {
+    public CustomProtocolHandler(int maxIdleCount, DeviceChannelManager channelManager,
+                                  HandlerBeanContainer container) {
         this.maxIdleCount = maxIdleCount;
         this.channelManager = channelManager;
+        this.container = container;
     }
 
     @Override
@@ -75,6 +85,8 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
         // 处理心跳请求：回复心跳响应
         if (header.getMsgType() == MsgType.HEARTBEAT_REQ) {
             log.debug("心跳请求: deviceId={}, 远程地址={}", deviceId, ctx.channel().remoteAddress());
+            container.getMetricsBinder().incrementHeartbeatReq();
+
             MessagePacket response = new MessagePacket();
             MessageHeader resHeader = new MessageHeader();
             resHeader.setMsgType(MsgType.HEARTBEAT_RESP);
@@ -82,19 +94,28 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
             response.setHeader(resHeader);
             response.setBody("PONG");
             ctx.writeAndFlush(response);
+
+            container.getMetricsBinder().incrementHeartbeatResp();
             return;
         }
 
-        // 处理 ACK 确认消息
+        // 处理 ACK 确认消息：调用 PendingAckManager 完成确认
         if (header.getMsgType() == MsgType.ACK) {
             log.debug("收到ACK: deviceId={}, sequenceId={}", deviceId, header.getSequenceId());
-            // ACK 由 PendingAckManager 处理，此处不再转发
+            boolean confirmed = container.getPendingAckManager()
+                    .ack(ctx.channel().id().asShortText(), header.getSequenceId());
+            if (confirmed) {
+                log.debug("ACK确认成功: deviceId={}, sequenceId={}", deviceId, header.getSequenceId());
+            } else {
+                log.warn("ACK确认失败（未找到或已过期）: deviceId={}, sequenceId={}",
+                        deviceId, header.getSequenceId());
+            }
             return;
         }
 
-        // 处理业务数据：TODO 分发到具体业务逻辑（P1-2 MessageDispatcher）
+        // 处理业务数据：通过 MessageDispatcher 路由到对应的 MessageHandler
         if (header.getMsgType() == MsgType.BUSINESS) {
-            log.info("业务数据: deviceId={}, 数据={}", deviceId, packet.getBody());
+            container.getMessageDispatcher().dispatch(ctx, deviceId, packet);
         }
     }
 

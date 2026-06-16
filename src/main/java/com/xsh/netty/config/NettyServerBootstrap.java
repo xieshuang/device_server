@@ -6,6 +6,8 @@ import com.xsh.netty.handler.AuthHandler;
 import com.xsh.netty.handler.CustomProtocolHandler;
 import com.xsh.netty.handler.HttpBusinessHandler;
 import com.xsh.netty.handler.MqttBusinessHandler;
+import com.xsh.netty.ratelimit.RateLimitHandler;
+import com.xsh.netty.ratelimit.RateLimiterService;
 import com.xsh.netty.server.DeviceChannelManager;
 import com.xsh.netty.server.NettyServerProperties;
 import io.netty.bootstrap.ServerBootstrap;
@@ -39,7 +41,8 @@ import java.util.concurrent.TimeUnit;
  * <ul>
  *   <li>自动检测并启用 Epoll（Linux 环境性能更优），否则回退到 NIO</li>
  *   <li>线程模型：bossGroup(1线程接收连接) → workerGroup(I/O读写) → businessGroup(业务处理)</li>
- *   <li>Pipeline 流程：[SslHandler] → ReadTimeoutHandler → IdleStateHandler → MultiProtocolDetector → AuthHandler → 业务Handler</li>
+ *   <li>Pipeline 流程：[SslHandler] → ReadTimeoutHandler → IdleStateHandler → MultiProtocolDetector
+ *       → AuthHandler → RateLimitHandler → CustomProtocolHandler</li>
  *   <li>业务 Handler 在独立线程池中执行，防止阻塞 I/O 线程</li>
  *   <li>Spring 容器关闭时优雅停机，释放所有资源</li>
  * </ul>
@@ -47,9 +50,11 @@ import java.util.concurrent.TimeUnit;
  * <p>Pipeline 动态路由流程（自定义协议路径）：
  * <pre>
  * [ByteBuf] → [SslHandler(可选)] → [ReadTimeoutHandler] → [IdleStateHandler]
- *     → [MultiProtocolDetector] → [CustomDecoder] → [AuthHandler] → [CustomHandler]
- *                                                           │
- *                                                  鉴权成功后移除 AuthHandler
+ *     → [MultiProtocolDetector] → [CustomDecoder] → [AuthHandler] → [RateLimitHandler]
+ *                                                           │                │
+ *                                                  鉴权成功后移除 AuthHandler  限流检查
+ *                                                                           ↓
+ *                                                              [CustomProtocolHandler]
  * </pre>
  */
 @Slf4j
@@ -60,6 +65,7 @@ public class NettyServerBootstrap {
     private final NettyServerProperties properties;
     private final AuthService authService;
     private final DeviceChannelManager channelManager;
+    private final HandlerBeanContainer handlerBeanContainer;
 
     /** Acceptor 线程组，负责接收新连接（1个线程足够） */
     private EventLoopGroup bossGroup;
@@ -143,14 +149,23 @@ public class NettyServerBootstrap {
                                 properties.getIdleTimeoutSeconds(), 0, 0, TimeUnit.SECONDS));
 
                         // 3. 多协议探测器：嗅探前几个字节判断协议类型，动态替换自身为对应编解码器
-                        pipeline.addLast(new MultiProtocolDetector(properties));
+                        pipeline.addLast(new MultiProtocolDetector(properties, handlerBeanContainer));
 
                         // 4. 鉴权 Handler：未认证连接只允许 AUTH_REQ，鉴权成功后自动移除
-                        pipeline.addLast(businessGroup, "authHandler", new AuthHandler(authService, channelManager));
+                        pipeline.addLast(businessGroup, "authHandler",
+                                new AuthHandler(authService, channelManager,
+                                        handlerBeanContainer.getMetricsBinder()));
+
+                        // 4.5 限流 Handler（鉴权通过后生效，心跳不限流）
+                        if (properties.isRateLimitEnabled()) {
+                            pipeline.addLast(businessGroup, "rateLimitHandler",
+                                    new RateLimitHandler(handlerBeanContainer.getRateLimiterService(), properties));
+                        }
 
                         // 5. 业务处理器：放入独立线程池执行，避免阻塞 I/O 线程
                         pipeline.addLast(businessGroup, "customHandler",
-                                new CustomProtocolHandler(properties.getMaxIdleCount(), channelManager));
+                                new CustomProtocolHandler(properties.getMaxIdleCount(), channelManager,
+                                        handlerBeanContainer));
                         pipeline.addLast(businessGroup, "httpHandler", new HttpBusinessHandler());
                         pipeline.addLast(businessGroup, "mqttHandler", new MqttBusinessHandler());
                     }

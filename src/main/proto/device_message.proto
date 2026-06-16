@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package com.xsh.netty.protocol;
+
+option java_package = "com.xsh.netty.protocol.protobuf";
+option java_outer_classname = "DeviceMessageProto";
+
+// 通用业务消息体
+message BusinessMessage {
+  string device_id = 1;       // 设备ID
+  int64 timestamp = 2;        // 时间戳（毫秒）
+  string msg_type = 3;        // 业务子类型
+  bytes payload = 4;          // 实际业务数据
+  map<string, string> ext = 5; // 扩展字段
+}
+
+// 鉴权请求（Protobuf 编码版本）
+message AuthRequestProto {
+  string device_id = 1;       // 设备ID
+  int64 timestamp = 2;        // 时间戳（毫秒）
+  string token = 3;           // HMAC 签名
+}

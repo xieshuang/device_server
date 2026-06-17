@@ -1,0 +1,98 @@
+groups:
+  - name: device-server
+    rules:
+      # ===== 鉴权告警 =====
+      - alert: HighAuthFailureRate
+        expr: rate(netty_auth_success_total[5m]) == 0 or rate(netty_auth_fail_total[5m]) / (rate(netty_auth_success_total[5m]) + rate(netty_auth_fail_total[5m])) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "鉴权失败率 > 10%"
+          description: "过去5分钟鉴权失败率超过10%，可能是密钥配置错误或批量攻击。"
+
+      - alert: NoAuthSuccess
+        expr: rate(netty_auth_success_total[5m]) == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: "无鉴权成功"
+          description: "过去10分钟无任何设备鉴权成功，可能Redis不可达或服务异常。"
+
+      # ===== ACK 积压告警 =====
+      - alert: HighAckPending
+        expr: netty_ack_pending > 5000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "待确认消息积压 > 5000"
+          description: "当前待确认消息数{{ $value }}，可能网络质量差或下游处理能力不足。"
+
+      - alert: CriticalAckPending
+        expr: netty_ack_pending > 10000
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "待确认消息严重积压 > 10000"
+          description: "当前待确认消息数{{ $value }}，可能导致内存增长风险。"
+
+      # ===== Kafka 告警 =====
+      - alert: KafkaSendFailure
+        expr: rate(netty_kafka_send_fail_total[5m]) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka 发送失败"
+          description: "过去5分钟 Kafka 发送失败率 > 0，消息可能丢失。"
+
+      - alert: KafkaSendSuccessZero
+        expr: rate(netty_kafka_send_success_total[15m]) == 0
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Kafka 无成功发送"
+          description: "过去15分钟无 Kafka 成功发送记录，可能Kafka集群异常。"
+
+      # ===== 连接数告警 =====
+      - alert: HighConnectionCount
+        expr: netty_connections_active > 80000
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "活跃连接数 > 80000"
+          description: "当前活跃连接{{ $value }}，接近容量上限。"
+
+      # ===== 限流告警 =====
+      - alert: HighRateLimitRejection
+        expr: rate(netty_rate_limited_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "限流拒绝率高"
+          description: "过去5分钟限流拒绝率 > 10/s，可能需要调整限流参数。"
+
+      # ===== JVM 告警 =====
+      - alert: HighMemoryUsage
+        expr: jvm_memory_used_bytes{area="heap"} / jvm_memory_max_bytes{area="heap"} > 0.85
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "JVM 堆内存使用 > 85%"
+          description: "堆内存使用率{{ $value | humanizePercentage }}，注意 GC 压力。"
+
+      - alert: HighGCPause
+        expr: rate(jvm_gc_pause_seconds_sum[5m]) > 0.5
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "GC 暂停时间过长"
+          description: "过去5分钟 GC 总暂停时间 > 0.5s，可能影响消息延迟。"

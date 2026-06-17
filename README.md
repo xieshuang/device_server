@@ -453,13 +453,19 @@ src/main/java/com/xsh/netty/
 │   ├── MessageHandler.java               # 业务消息处理器接口
 │   ├── MessageDispatcher.java            # 消息分发器
 │   ├── ThingModelContext.java            # 物模型上下文                              [V4]
-│   └── ThingModelMessageHandler.java     # 物模型插件接口                             [V4]
+│   ├── ThingModelMessageHandler.java     # 物模型插件接口                             [V4]
+│   └── ScriptEngineMessageHandler.java   # 动态脚本引擎                              [V5.2]
 ├── ratelimit/
-│   └── RateLimiterService.java           # 双维度令牌桶
+│   ├── RateLimiterService.java           # 双维度令牌桶
+│   └── RateLimitHandler.java             # Pipeline 限流 Handler
 ├── kafka/
 │   ├── KafkaProducerService.java         # Kafka 异步发送
 │   ├── KafkaProducerConfig.java          # Kafka 条件装配
 │   └── KafkaMessageEnvelope.java         # 消息信封
+├── controller/                           # 运维 REST API                             [V5.1]
+│   ├── DeviceManagementController.java   # 设备管理
+│   ├── FirewallController.java           # 防火墙管理
+│   └── RateLimitController.java          # 限流管理
 ├── config/
 │   ├── NettyServerBootstrap.java         # 服务启动 + 优雅停机 + 集群强防御校验
 │   ├── NettyMetricsBinder.java           # 12项 Micrometer 指标
@@ -468,6 +474,22 @@ src/main/java/com/xsh/netty/
 └── client/
     ├── TestClient.java                   # 交互式测试客户端
     └── StressTestClient.java             # 压力测试客户端
+
+scripts/                                  # 运维脚本                                   [V5.3]
+├── test-report.sh                        # 自动化测试报告
+├── test-alert.sh                         # 测试异常告警
+├── pre-commit-check.sh                   # Git pre-commit hook
+└── load-test-baseline.sh                 # 压力测试基线
+
+docs/                                     # 文档                                      [V5.3]
+├── design/                               # 方案设计
+│   ├── V4-开发方案.md
+│   ├── V5-开发方案.md
+│   └── V5x-后续演进规划.md
+├── test-reports/                         # 测试报告
+│   ├── V5-测试覆盖率报告.md
+│   └── AUTO-TEST-REPORT.md
+└── config-encryption-guide.md            # 配置加密指南
 ```
 
 ---
@@ -566,17 +588,27 @@ management:
 
 ### 7.1 单元测试
 
-已实现的单元测试：
+当前 130 个测试用例，覆盖 18 个测试类（覆盖率 54.3%）：
 
-| 测试类 | 测试项 | 数量 |
-|--------|--------|------|
-| `CustomProtocolCodecTest` | 心跳编解码、业务编解码、非法魔数、超大帧、半包处理 | 5 |
-| `NettyServerPropertiesTest` | 默认配置值校验 | 1 |
+| 测试类 | 数量 |
+|--------|------|
+| 编解码测试（CustomProtocol/Modbus/MultiProtocolDetector） | 25 |
+| 业务逻辑测试（AuthHandler/PendingAckManager/DeviceChannelManager等） | 49 |
+| 安全集群测试（NonceValidator/Revocation/RateLimitHandler/Cluster） | 21 |
+| API集成测试（DeviceManagement/Firewall/RateLimit） | 13 |
+| 其他（MetricsBinder/HmacUtils/VersionNegotiator等） | 22 |
 
 运行方式：
 
 ```bash
+# 运行全部测试
 mvn test
+
+# 生成覆盖率报告
+bash scripts/test-report.sh full
+
+# 告警检查
+bash scripts/test-alert.sh 50
 ```
 
 ### 7.2 交互式测试
@@ -757,7 +789,9 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 11. **Grafana JVM 监控**：Dashboard 含堆内存/GC/线程/CPU 面板
 12. **IP 动态黑名单**：60s/5次恶意行为自动拉黑，Redis + Caffeine 双层缓存
 13. **TCP 背压流控**：下游积压时通过 TCP 滑动窗口反压设备降频，防 OOM
-14. **Lua 原子集群注销**：分布式集群下防止网络闪断竞态误删合法路由
+14. **单元测试 130 用例**：编解码/业务逻辑/安全/API 全覆盖
+15. **Prometheus 告警**：11 条规则覆盖鉴权/ACK/Kafka/连接/限流/JVM
+16. **Jasypt 配置加密**：Redis/Kafka 密码环境变量注入，不入库
 
 ---
 
@@ -772,6 +806,10 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 | P3 扩展功能 | ✅ 已完成 | WebSocket、Protobuf、Grafana 看板 |
 | V4.0 生产级 | ✅ 已完成 | HashedWheelTimer ACK、TCP背压流控、IP动态黑名单、优雅停机、分布式集群路由 |
 | V4.1 工业协议 | ✅ 已完成 | Modbus-TCP(MBAP+6功能码)、OPC-UA(HEL/OPN/MSG)、物模型插件接口 |
+| V5.0 生产就绪 | ✅ 已完成 | 测试补齐(130用例)、Nonce防重放、设备吊销、全链路traceId、Jasypt加密 |
+| V5.1 运维API | ✅ 已完成 | REST API(Device/Firewall/RateLimit)、集成测试 |
+| V5.2 协议完备 | ✅ 已完成 | MQTT 3.1.1完整协议(CONNECT/PUBLISH/SUBSCRIBE)、物模型V2脚本引擎 |
+| V5.3 安全增强 | ✅ 已完成 | Prometheus 11条告警规则、配置加密指南、压测基线脚本 |
 
 ---
 

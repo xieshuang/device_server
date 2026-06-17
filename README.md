@@ -1,6 +1,6 @@
 # Device Server - 工业级 Netty 多协议设备接入服务器
 
-基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持自定义协议、HTTP、MQTT、WebSocket 四种协议接入，内置设备鉴权、心跳检测、消息确认、TLS 加密、Kafka 持久化、流量控制等工业级特性。
+基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持 DVSR 自定义协议、Modbus-TCP、OPC-UA、HTTP、WebSocket、MQTT 六种协议接入，内置设备鉴权、HasdedWheelTimer ACK、TCP 背压流控、IP 动态黑名单、优雅停机、分布式集群路由等生产级特性。
 
 ---
 
@@ -15,8 +15,9 @@
 | Spring Data Redis | Spring Boot 内置 | Lettuce 异步客户端，设备鉴权密钥存储 |
 | Caffeine | Spring Boot 内置 | 本地缓存，待确认消息 TTL 管理 |
 | Spring Kafka | Spring Boot 内置 | 消息持久化，统一 Topic + deviceId 分区 |
-| Guava | 33.0.0-jre | 令牌桶限流（RateLimiter） |
+| Guava | 32.1.3-jre | 令牌桶限流（RateLimiter） |
 | Protobuf | 3.25.3 | 二进制序列化（高性能，与 JSON 并存） |
+| Eclipse Milo | 0.6.13 | OPC-UA SDK Server |
 | Micrometer + Prometheus | Spring Boot 内置 | 可观测性指标暴露 |
 | Lombok | Spring Boot 内置 | 减少样板代码 |
 
@@ -29,29 +30,37 @@
 ```
 [设备/客户端] ──TCP/TLS──> [Netty Server]
                                │
-                         [SslHandler]          ← TLS 加密（可选，独立端口 9001）
+                         [SslHandler]          ← TLS 加密（独立端口 9001）
+                               │
+                         [IpFilterHandler]     ← V4 IP 动态黑名单
                                │
                          [ReadTimeoutHandler]   ← 鉴权超时检测
                                │
+                         [BackpressureHandler]  ← V4 TCP 背压流控
+                               │
                          [IdleStateHandler]     ← 空闲检测
                                │
-                         [MultiProtocolDetector] ← 协议嗅探，动态路由
+                         [MultiProtocolDetector] ← 6协议嗅探，动态路由
                                │
-                    ┌──────────┼──────────┬──────────┐
-                    ▼          ▼          ▼          ▼
-             [CustomDecoder] [HttpCodec] [MqttDecoder] [WebSocket升级]
-                    │          │          │              │
-             [AuthHandler]    │          │         [WSHandler]
-                    │          │          │              │
-             [RateLimitHandler]│         │              │
-                    │          │          │              │
-             [CustomHandler] [HttpHandler] [MqttHandler] [WSBizHandler]
-                    │                                        │
-             [MessageDispatcher] ←──────────────────────────┘
-                    │
-             [BusinessMessageHandler] → [Kafka]
-                    │
-             [businessGroup]     ← 独立线程池，不阻塞 I/O
+          ┌────────┬──────────┼──────────┬──────────┬──────────┐
+          ▼        ▼          ▼          ▼          ▼          ▼
+     [DVSR]   [Modbus]     [OPC-UA]   [HTTP/WS]  [MQTT]    (未知拉黑)
+          │        │          │          │          │
+     [AuthHandler]  │          │          │          │
+          │        │          │          │          │
+   [RateLimitHandler] │        │          │          │
+          │        │          │          │          │
+   [CustomHandler][ModbusHdr][OpcUaHdr][HttpHdr] [MqttHdr]
+          │        │          │          │          │
+          └────────┴──────────┴──────────┴──────────┘
+                              │
+                       [MessageDispatcher]
+                              │
+          [ThingModelMessageHandler] (V4 物模型前置转换)
+                              │
+                 [BusinessMessageHandler] → [Kafka]
+                              │
+                       [businessGroup]     ← 独立线程池
 ```
 
 ### 2.2 线程模型
@@ -269,64 +278,196 @@ VersionNegotiator.negotiate(clientVersion)
 重连成功 → 重置退避 → 重新发送 AUTH_REQ
 ```
 
----
+### 2.17 HashedWheelTimer ACK 优化（V4）
 
+```
+V3.x: Caffeine TTL 缓存，后台线程批量清理 → 高并发 GC 压力
+V4.x: Netty HashedWheelTimer，单线程轮询 O(1) 超时检测
+      双 ConcurrentHashMap + LongAdder 精确计数
+      轮盘 2048 槽位，100ms tick
+```
+
+ACK 写入 → packetMap + timeoutMap。ACK 到达 → 双表移除 + timeout.cancel()。超时 → 日志告警（不自动重传避免雪崩）。
+
+### 2.18 TCP 背压流控（V4）
+
+```
+BackpressureHandler
+        │
+        ▼
+channelWritabilityChanged 事件双向驱动
+        │
+        ├── 高水位(64KB) → setAutoRead(false)，停止读 TCP 缓冲区
+        │                    TCP 滑动窗口收缩 → 设备降频
+        │
+        └── 低水位(32KB) → setAutoRead(true)，恢复通信
+```
+
+基于 Netty Channel 的 `WRITE_BUFFER_HIGH_WATER_MARK` 和 `LOW_WATER_MARK` 配置。
+
+### 2.19 IP 动态黑名单（V4）
+
+```
+IpFilterHandler（Pipeline 最前端）
+        │
+        ▼
+IpfirewallService.isBanned(ip)
+        │
+        ├── 本地 Caffeine 缓存命中 → ctx.close()
+        ├── Redis 黑名单命中 → ctx.close()
+        └── 放行 → 后续 Handler 处理
+                │
+                ▼
+        MultiProtocolDetector 未知协议 → recordFailure(ip)
+        ip 计数超过阈值(60s/5次) → Redis 黑名单(TTL 30min)
+```
+
+### 2.20 优雅停机与离线遗言（V4）
+
+```
+Spring @PreDestroy
+        │
+        ▼
+  0. 关闭监听端口（拒绝新连接）
+  1. channelManager.broadcastMaintenanceNotice()  ← 广播维护通知
+  2. kafkaProducerService.flushBuffer(5s)          ← 冲刷 Kafka 缓冲器
+  3. channelManager.closeAll()                     ← 关闭所有连接
+  4. boss/worker/business group.shutdownGracefully  ← 释放线程组
+```
+
+### 2.21 分布式集群路由（V4）
+
+```
+Node-1               Node-2               Node-3
+  │                    │                    │
+  ├─ DeviceChannelManager (本地)
+  │   └─ ClusterSessionManager (Redis)
+  └─ ClusterRouterService (Pub/Sub)
+            │                    │
+      ┌─────▼────────────────────▼─────┐
+      │            Redis               │
+      │  Hash: device:session:{id}     │  ← nodeId 路由表
+      │  PubSub: cluster:command:{node}│  ← 跨节点指令
+      └────────────────────────────────┘
+```
+
+Lua 原子令牌校验注销，防止节点闪断竞态误删。
+
+### 2.22 Modbus-TCP 协议支持（V4）
+
+```
+MultiProtocolDetector
+        │
+        ▼
+isModbusTcp(b2/b3=0x0000 + b4=0x00 + b5∈(0,255])
+        │
+        ▼
+ModbusEncoder → ModbusDecoder → ModbusBusinessHandler
+                                    │
+                    支持功能码: 01(读线圈) 02(读离散输入)
+                              03(读保持寄存器) 04(读输入寄存器)
+                              06(写单寄存器) 10(写多寄存器)
+```
+
+### 2.23 OPC-UA 协议支持（V4）
+
+```
+MultiProtocolDetector
+        │
+        ▼
+isOpcUa(HEL/ACK/OPN/MSG/CLO/ERR 消息类型识别)
+        │
+        ▼
+OpcUaBusinessHandler
+        │
+  状态机: HEL → ACK | OPN → 记录通道 | MSG → 透传 | CLO → 关闭
+```
+
+集成 Eclipse Milo SDK 0.6.13。
+
+### 2.24 物模型插件接口（V4）
+
+```
+设备原始二进制数据 (Modbus Hex / OPC-UA Variant / DVSR byte[])
+        │
+        ▼
+ThingModelMessageHandler (业务方实现)
+        │
+        ▼
+convertToThingModel(ThingModelContext) → 标准物模型 JSON
+        │
+        ▼
+回填 packet.body → BusinessMessageHandler → Kafka
+```
+
+零侵入设计：实现接口 + `@Component` → DispatcherConfig 自动装配。
 ## 3. 项目结构
 
 ```
 src/main/java/com/xsh/netty/
 ├── DeviceServerApplication.java          # Spring Boot 主启动类
 ├── protocol/
-│   ├── MessageHeader.java                # 协议头定义（V1/V2 兼容，含 sequenceId）
-│   ├── MessagePacket.java                # 消息包（头部 + Body + rawBody）
+│   ├── MessageHeader.java                # 协议头定义（V1/V2 兼容）
+│   ├── MessagePacket.java                # 消息包（Header + Body + rawBody）
 │   ├── MsgType.java                      # 消息类型常量（8种）
-│   ├── AuthRequest.java                  # 鉴权请求体（deviceId + timestamp + token）
-│   ├── ChannelAttributes.java            # Channel 属性键（deviceId, authenticated, negotiatedVersion）
-│   ├── VersionInfo.java                  # 协议版本常量（SERVER_MAX/MIN_VERSION）
-│   └── VersionNegotiator.java            # 版本协商器（min(clientVersion, SERVER_MAX_VERSION)）
+│   ├── AuthRequest.java                  # 鉴权请求体
+│   ├── ChannelAttributes.java            # Channel 属性键
+│   ├── VersionInfo.java                  # 版本常量
+│   └── VersionNegotiator.java            # 版本协商器
 ├── serialize/
 │   ├── Serializer.java                   # 序列化接口（JSON=1, Protobuf=2）
-│   ├── JsonSerializer.java               # JSON 序列化实现
-│   └── ProtobufSerializer.java           # Protobuf 序列化实现（Class→Parser 动态映射）
+│   ├── JsonSerializer.java               # JSON 序列化
+│   └── ProtobufSerializer.java           # Protobuf 序列化
 ├── codec/
-│   ├── CustomProtocolEncoder.java        # V2 协议编码器
-│   ├── CustomProtocolDecoder.java        # V1/V2 自适应解码器（粘包半包 + 帧长度校验）
-│   ├── MultiProtocolDetector.java        # 多协议探测器（自定义/HTTP/WS/MQTT 动态路由）
-│   └── WebSocketFrameCodec.java          # WebSocket 帧 ↔ MessagePacket 转换器
+│   ├── CustomProtocolEncoder.java        # DVSR 协议编码器
+│   ├── CustomProtocolDecoder.java        # DVSR V1/V2 自适应解码器
+│   ├── MultiProtocolDetector.java        # 6协议探测器（DVSR/Modbus/OPC-UA/HTTP/MQTT）
+│   ├── WebSocketFrameCodec.java          # WebSocket 帧转换器
+│   ├── ModbusFrame.java                  # Modbus 数据帧 POJO                        [V4]
+│   ├── ModbusDecoder.java                # Modbus MBAP 解码器                        [V4]
+│   └── ModbusEncoder.java                # Modbus MBAP 编码器                        [V4]
 ├── auth/
 │   ├── AuthService.java                  # 鉴权服务接口
 │   ├── HmacUtils.java                    # HMAC-MD5 工具类
-│   └── RedisAuthService.java             # Redis 异步鉴权实现
+│   └── RedisAuthService.java             # Redis 异步鉴权 + 启动连通性校验
 ├── handler/
-│   ├── AuthHandler.java                  # 鉴权处理器（鉴权+版本协商后自动移除）
-│   ├── CustomProtocolHandler.java        # 自定义协议业务处理器（心跳 + ACK + Dispatcher）
-│   ├── BusinessMessageHandler.java       # 业务消息处理器（Kafka 持久化 + 指标记录）
-│   ├── WebSocketBusinessHandler.java     # WebSocket 业务处理器（复用 Dispatcher）
-│   ├── HttpBusinessHandler.java          # HTTP 业务处理器
-│   └── MqttBusinessHandler.java          # MQTT 业务处理器
+│   ├── AuthHandler.java                  # 鉴权处理器 + 版本协商
+│   ├── CustomProtocolHandler.java        # DVSR 业务处理器
+│   ├── BackpressureHandler.java          # TCP 背压流控                             [V4]
+│   ├── IpFilterHandler.java              # IP 动态黑名单                             [V4]
+│   ├── BusinessMessageHandler.java       # Kafka 持久化 + Protobuf 区分
+│   ├── WebSocketBusinessHandler.java     # WebSocket 鉴权 + 路由
+│   ├── ModbusBusinessHandler.java        # Modbus 6种功能码                          [V4]
+│   ├── OpcUaBusinessHandler.java         # OPC-UA HEL/OPN/MSG 状态机                 [V4]
+│   ├── HttpBusinessHandler.java          # HTTP 业务（预留）
+│   └── MqttBusinessHandler.java          # MQTT 业务（预留）
 ├── server/
-│   ├── NettyServerProperties.java        # 配置属性类（含 TLS/Kafka/限流/WebSocket）
-│   ├── DeviceChannelManager.java         # 设备连接管理器（踢旧保新 + 定向推送）
-│   ├── DeviceSession.java                # 设备会话信息
-│   └── PendingAckManager.java            # 待确认消息管理器（Caffeine TTL）
+│   ├── NettyServerProperties.java        # 配置属性（45+ 配置项）
+│   ├── DeviceChannelManager.java         # 连接管理（优雅停机广播 + 全关闭）
+│   ├── DeviceSession.java                # 设备会话
+│   ├── PendingAckManager.java            # HasdedWheelTimer ACK 管理                 [V4]
+│   ├── IpFirewallService.java            # IP 防火墙（Redis + Caffeine）              [V4]
+│   ├── ClusterSessionManager.java        # 集群会话（Lua 原子注销）                    [V4]
+│   └── ClusterRouterService.java         # 集群路由（Redis Pub/Sub）                  [V4]
 ├── dispatcher/
 │   ├── MessageHandler.java               # 业务消息处理器接口
-│   └── MessageDispatcher.java            # 消息分发器（按 msgType 路由）
+│   ├── MessageDispatcher.java            # 消息分发器
+│   ├── ThingModelContext.java            # 物模型上下文                              [V4]
+│   └── ThingModelMessageHandler.java     # 物模型插件接口                             [V4]
 ├── ratelimit/
-│   ├── RateLimiterService.java           # 限流服务（全局+单设备双维度令牌桶）
-│   └── RateLimitHandler.java             # Pipeline 限流 Handler
+│   └── RateLimiterService.java           # 双维度令牌桶
 ├── kafka/
-│   ├── KafkaProducerService.java         # Kafka 异步发送服务
-│   ├── KafkaProducerConfig.java          # Kafka Producer 配置
-│   └── KafkaMessageEnvelope.java         # 消息信封（headers + payload + receivedAt）
+│   ├── KafkaProducerService.java         # Kafka 异步发送
+│   ├── KafkaProducerConfig.java          # Kafka 条件装配
+│   └── KafkaMessageEnvelope.java         # 消息信封
 ├── config/
-│   ├── NettyServerBootstrap.java         # 服务启动引导（TLS + 鉴权 + 限流 + WS + 优雅停机）
-│   ├── NettyMetricsBinder.java           # Micrometer 指标注册（含 Kafka/限流/WS 指标）
-│   ├── DispatcherConfig.java             # 消息分发器配置（Spring Bean 自动注册）
-│   └── HandlerBeanContainer.java         # Handler 依赖容器（解决 Netty Handler Bean 注入）
+│   ├── NettyServerBootstrap.java         # 服务启动 + 优雅停机 + 集群强防御校验
+│   ├── NettyMetricsBinder.java           # 12项 Micrometer 指标
+│   ├── DispatcherConfig.java             # 分发器 + 物模型自动装配
+│   └── HandlerBeanContainer.java         # Handler Bean 依赖容器
 └── client/
-    ├── TestClient.java                   # 交互式测试客户端（鉴权 + 断线重连）
-    └── StressTestClient.java             # 压力测试客户端（万级连接）
+    ├── TestClient.java                   # 交互式测试客户端
+    └── StressTestClient.java             # 压力测试客户端
 ```
 
 ---
@@ -614,7 +755,9 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 9. **Kafka 条件装配**：`kafka-enabled=false` 时 Kafka Bean 不创建，避免未配置 Kafka 导致启动失败
 10. **启动健康检查**：启动时校验 Redis PING，不可用时告警不阻塞
 11. **Grafana JVM 监控**：Dashboard 含堆内存/GC/线程/CPU 面板
-12. **maven-enforcer-plugin**：构建时检测重复依赖声明
+12. **IP 动态黑名单**：60s/5次恶意行为自动拉黑，Redis + Caffeine 双层缓存
+13. **TCP 背压流控**：下游积压时通过 TCP 滑动窗口反压设备降频，防 OOM
+14. **Lua 原子集群注销**：分布式集群下防止网络闪断竞态误删合法路由
 
 ---
 
@@ -626,13 +769,35 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 | P0 生产必须 | ✅ 已完成 | 设备鉴权(Redis+HMAC)、连接管理(踢旧保新)、消息确认(Caffeine TTL)、TLS 加密 |
 | P1 运维必备 | ✅ 已完成 | 可观测性(Micrometer+Prometheus)、消息路由分发、断线重连(指数退避) |
 | P2 规模化 | ✅ 已完成 | 流量控制(令牌桶)、消息持久化(Kafka)、协议版本协商 |
-| P3 扩展功能 | ✅ 已完成 | WebSocket 支持、Protobuf 序列化、Grafana 看板（MQTT 暂不接入） |
+| P3 扩展功能 | ✅ 已完成 | WebSocket、Protobuf、Grafana 看板 |
+| V4.0 生产级 | ✅ 已完成 | HashedWheelTimer ACK、TCP背压流控、IP动态黑名单、优雅停机、分布式集群路由 |
+| V4.1 工业协议 | ✅ 已完成 | Modbus-TCP(MBAP+6功能码)、OPC-UA(HEL/OPN/MSG)、物模型插件接口 |
 
 ---
 
 ## 11. 版本变更记录
 
-### V3.1 (当前) — 生产级安全与健壮性修复
+### V4.1 (当前) — 工业协议全覆盖
+
+**阶段 6-8 新增：**
+- Modbus-TCP：MBAP 增强嗅探（b2/b3=0x0000 + b4=0x00）+ 6 种功能码（01/02/03/04/06/10）
+- OPC-UA：HEL/ACK/OPN/MSG/CLO/ERR 消息类型识别 + Eclipse Milo SDK 0.6.13
+- 物模型插件：ThingModelMessageHandler 接口 + ThingModelContext 上下文，零侵入自动装配
+- MultiProtocolDetector：6 协议全覆盖（DVSR/Modbus/OPC-UA/HTTP/WS/MQTT）
+
+### V4.0 — 生产级高并发基础
+
+**阶段 1-5 新增：**
+- HashedWheelTimer ACK：双 Map + LongAdder 替代 Caffeine，O(1) 超时检测，2048 槽位
+- TCP 背压流控：channelWritabilityChanged 双向驱动，高水位 64KB/低水位 32KB
+- IP 动态黑名单：Redis+Caffeine，60s/5次自动拉黑，fail-open 安全策略
+- 优雅停机：广播维护通知 + Kafka flush 冲刷 + shutdownGracefully 超时隔离
+- 分布式集群：ClusterSessionManager Lua 原子注销 + ClusterRouterService Pub/Sub 路由 + node-id 强防御
+- KafkaProducerService.flushBuffer()：替代 CompletableFuture.join() 避免死锁
+
+**新增依赖：** guava 32.1.3-jre（版本兼容调整）、Eclipse Milo 0.6.13
+
+### V3.1 — 生产级安全与健壮性修复
 
 **P0 安全漏洞修复：**
 - **token 明文泄露**：`RedisAuthService` 删除 token 明文日志（log.info → log.debug 脱敏）

@@ -189,7 +189,7 @@ public class NettyServerBootstrap {
                                 new CustomProtocolHandler(properties.getMaxIdleCount(), channelManager,
                                         handlerBeanContainer));
                         pipeline.addLast(businessGroup, "httpHandler", new HttpBusinessHandler());
-                        pipeline.addLast(businessGroup, "mqttHandler", new MqttBusinessHandler());
+                        // MQTT Handler: 已由 MultiProtocolDetector 按需动态插入
                     }
                 });
         return bootstrap;

@@ -2,6 +2,8 @@ package com.xsh.netty.codec;
 
 import com.xsh.netty.config.HandlerBeanContainer;
 import com.xsh.netty.handler.ModbusBusinessHandler;
+import com.xsh.netty.handler.MqttBusinessHandler;
+import com.xsh.netty.handler.MqttTopicManager;
 import com.xsh.netty.handler.OpcUaBusinessHandler;
 import com.xsh.netty.handler.WebSocketBusinessHandler;
 import com.xsh.netty.server.NettyServerProperties;
@@ -122,6 +124,8 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
             log.debug("检测到 MQTT 协议，来源：{}", ctx.channel().remoteAddress());
             ctx.pipeline().addAfter(selfName, "mqttDecoder", new MqttDecoder());
             ctx.pipeline().addAfter("mqttDecoder", "mqttEncoder", MqttEncoder.INSTANCE);
+            ctx.pipeline().addAfter("mqttEncoder", "mqttHandler",
+                    new MqttBusinessHandler(MqttTopicManager.INSTANCE));
             ctx.pipeline().remove(this);
             return;
         }

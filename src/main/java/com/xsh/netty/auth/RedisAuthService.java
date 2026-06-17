@@ -52,7 +52,8 @@ public class RedisAuthService implements AuthService {
 
                 // 3. 使用 HmacUtils 计算 HMAC 并比对，确保与客户端算法一致
                 String expectedToken = HmacUtils.computeToken(deviceId, timestamp, productSecret);
-                log.info("server 端生成的token={}", expectedToken);
+                // 注意：严禁在日志中打印 expectedToken，避免 token 泄露
+                log.debug("server 端 HMAC 计算完成: deviceId={}", deviceId);
                 boolean valid = expectedToken.equalsIgnoreCase(token);
 
                 if (!valid) {

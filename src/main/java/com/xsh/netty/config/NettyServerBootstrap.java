@@ -200,21 +200,34 @@ public class NettyServerBootstrap {
     @PreDestroy
     public void stop() {
         log.info("Netty 服务关闭中...");
-        if (tlsServerChannel != null) {
-            tlsServerChannel.close();
-        }
-        if (serverChannel != null) {
-            serverChannel.close();
-        }
-        if (bossGroup != null) {
-            bossGroup.shutdownGracefully();
-        }
-        if (workerGroup != null) {
-            workerGroup.shutdownGracefully();
-        }
-        if (businessGroup != null) {
-            businessGroup.shutdownGracefully();
-        }
+        // 每个关闭操作独立 try-catch，确保一个异常不影响其他资源释放
+        silentClose(tlsServerChannel, "TLS Channel");
+        silentClose(serverChannel, "明文 Channel");
+        silentShutdown(bossGroup, "bossGroup");
+        silentShutdown(workerGroup, "workerGroup");
+        silentShutdown(businessGroup, "businessGroup");
         log.info("Netty 服务已关闭");
+    }
+
+    /** 安全关闭 Channel，异常不传递 */
+    private void silentClose(Channel channel, String name) {
+        if (channel != null) {
+            try {
+                channel.close().awaitUninterruptibly();
+            } catch (Exception e) {
+                log.error("关闭 {} 时异常: {}", name, e.getMessage());
+            }
+        }
+    }
+
+    /** 安全关闭 EventLoopGroup，异常不传递 */
+    private void silentShutdown(EventExecutorGroup group, String name) {
+        if (group != null) {
+            try {
+                group.shutdownGracefully();
+            } catch (Exception e) {
+                log.error("关闭 {} 时异常: {}", name, e.getMessage());
+            }
+        }
     }
 }

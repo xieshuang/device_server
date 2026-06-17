@@ -6,6 +6,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.apache.kafka.clients.producer.ProducerRecord;
 import org.apache.kafka.common.header.Headers;
 import org.apache.kafka.common.header.internals.RecordHeaders;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
@@ -25,6 +26,7 @@ import java.nio.charset.StandardCharsets;
  */
 @Slf4j
 @Service
+@ConditionalOnProperty(name = "netty.server.kafka-enabled", havingValue = "true")
 public class KafkaProducerService {
 
     private final KafkaTemplate<String, String> kafkaTemplate;

@@ -66,7 +66,7 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
 
         // 1. 自定义协议：魔数 0x44565352 ("DVSR")
         if (isCustomProtocol(b0, b1, b2, b3)) {
-            log.info("检测到自定义协议，来源：{}", ctx.channel().remoteAddress());
+            log.debug("检测到自定义协议，来源：{}", ctx.channel().remoteAddress());
             ctx.pipeline().addAfter(selfName, "customDecoder",
                     new CustomProtocolDecoder(properties.getMaxFrameLength()));
             ctx.pipeline().addAfter("customDecoder", "customEncoder", new CustomProtocolEncoder());
@@ -77,7 +77,7 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
         // 2. HTTP/WebSocket 协议：匹配 GET/POST/PUT/DELETE/HEAD/PATCH/OPTIONS 请求方法
         // WebSocket 升级请求也是 HTTP 格式，先走 HTTP 编解码，后续根据 Upgrade 头区分
         if (isHttp(b0, b1, b2, b3)) {
-            log.info("检测到 HTTP/WebSocket 协议，来源：{}", ctx.channel().remoteAddress());
+            log.debug("检测到 HTTP/WebSocket 协议，来源：{}", ctx.channel().remoteAddress());
             ctx.pipeline().addAfter(selfName, "httpCodec", new HttpServerCodec());
             ctx.pipeline().addAfter("httpCodec", "httpAggregator",
                     new HttpObjectAggregator(65536));
@@ -98,7 +98,7 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
 
         // 3. MQTT 协议：匹配 CONNECT 报文（首字节高4位=1，即 0x10）
         if (isMqtt(b0, b1)) {
-            log.info("检测到 MQTT 协议，来源：{}", ctx.channel().remoteAddress());
+            log.debug("检测到 MQTT 协议，来源：{}", ctx.channel().remoteAddress());
             ctx.pipeline().addAfter(selfName, "mqttDecoder", new MqttDecoder());
             ctx.pipeline().addAfter("mqttDecoder", "mqttEncoder", MqttEncoder.INSTANCE);
             ctx.pipeline().remove(this);

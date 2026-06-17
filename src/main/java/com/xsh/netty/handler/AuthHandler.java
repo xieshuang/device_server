@@ -139,7 +139,7 @@ public class AuthHandler extends SimpleChannelInboundHandler<MessagePacket> {
         resp.setBody(String.valueOf(negotiated));
         ctx.writeAndFlush(resp);
 
-        log.info("协议版本协商完成: clientVersion={}, negotiated={}, 远程地址={}",
+        log.debug("协议版本协商完成: clientVersion={}, negotiated={}, 远程地址={}",
                 clientVersion, negotiated, ctx.channel().remoteAddress());
     }
 

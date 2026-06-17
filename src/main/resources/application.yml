@@ -32,9 +32,9 @@ netty:
 spring:
   data:
     redis:
-      host: tx-redis-sh-test.xuexizhiwang.com
-      port: 16371
-      password: Ilodkaldiel%#I89Lhaldki
+      host: 127.0.0.1
+      port: 6379
+      password: your_strong_password
       lettuce:
         pool:
           max-active: 16

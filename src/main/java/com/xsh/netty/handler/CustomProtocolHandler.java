@@ -115,7 +115,12 @@ public class CustomProtocolHandler extends SimpleChannelInboundHandler<MessagePa
 
         // 处理业务数据：通过 MessageDispatcher 路由到对应的 MessageHandler
         if (header.getMsgType() == MsgType.BUSINESS) {
-            container.getMessageDispatcher().dispatch(ctx, deviceId, packet);
+            try {
+                container.getMessageDispatcher().dispatch(ctx, deviceId, packet);
+            } catch (Exception e) {
+                // 捕获 MessageHandler 抛出的异常，避免单个消息异常导致整个连接断开
+                log.error("业务消息分发异常: deviceId={}, seqId={}", deviceId, header.getSequenceId(), e);
+            }
         }
     }
 

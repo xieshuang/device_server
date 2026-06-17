@@ -41,6 +41,7 @@ netty:
     cluster-node-id: ""                 # 集群节点ID
     cluster-session-ttl-seconds: 3600   # 集群会话TTL
     thing-model-enabled: false          # 物模型开关
+    thing-model-script-enabled: false  # V5.2 动态脚本引擎开关
 
 spring:
   data:

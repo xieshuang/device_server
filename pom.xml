@@ -158,6 +158,22 @@
                     </execution>
                 </executions>
             </plugin>
+            <!-- JaCoCo 测试覆盖率 -->
+            <plugin>
+                <groupId>org.jacoco</groupId>
+                <artifactId>jacoco-maven-plugin</artifactId>
+                <version>0.8.11</version>
+                <executions>
+                    <execution>
+                        <goals><goal>prepare-agent</goal></goals>
+                    </execution>
+                    <execution>
+                        <id>report</id>
+                        <phase>test</phase>
+                        <goals><goal>report</goal></goals>
+                    </execution>
+                </executions>
+            </plugin>
             <!-- 依赖版本冲突检测：必须在构建阶段校验版本唯一性 -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>

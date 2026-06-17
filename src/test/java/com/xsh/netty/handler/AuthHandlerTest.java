@@ -3,6 +3,7 @@ package com.xsh.netty.handler;
 import com.xsh.netty.auth.AuthService;
 import com.xsh.netty.config.NettyMetricsBinder;
 import com.xsh.netty.protocol.AuthRequest;
+import com.xsh.netty.protocol.ChannelAttributes;
 import com.xsh.netty.protocol.MessageHeader;
 import com.xsh.netty.protocol.MessagePacket;
 import com.xsh.netty.protocol.MsgType;
@@ -132,6 +133,52 @@ class AuthHandlerTest {
         Byte negotiatedVersion = channel.attr(
                 com.xsh.netty.protocol.ChannelAttributes.NEGOTIATED_VERSION).get();
         assertNotNull(negotiatedVersion, "协商版本不应为 null");
+
+        channel.finish();
+    }
+
+    @Test
+    void testAuthFail_TimestampOutOfRange() {
+        // mock 不返回任何值（因为时间戳校验在 authService 调用之前）
+        EmbeddedChannel channel = new EmbeddedChannel();
+        channel.pipeline().addLast(authHandler);
+
+        MessagePacket packet = new MessagePacket();
+        MessageHeader header = new MessageHeader();
+        header.setMsgType(MsgType.AUTH_REQ);
+        header.setSerializationType(Serializer.JSON_SERIALIZATION);
+        packet.setHeader(header);
+
+        AuthRequest authReq = new AuthRequest();
+        authReq.setDeviceId("dev-001");
+        authReq.setTimestamp(System.currentTimeMillis() - 10 * 60 * 1000); // 10 分钟前
+        authReq.setToken("old-token");
+        packet.setBody(authReq);
+
+        channel.writeInbound(packet);
+
+        // 时间戳校验由 RedisAuthService 内部完成，AuthHandler 仅做转发
+        verify(authService).authenticate(eq("dev-001"), anyLong(), eq("old-token"), any());
+
+        channel.finish();
+    }
+
+    @Test
+    void testVersionNegotiate_StringBody() {
+        EmbeddedChannel channel = new EmbeddedChannel();
+        channel.pipeline().addLast(authHandler);
+
+        MessagePacket packet = new MessagePacket();
+        MessageHeader header = new MessageHeader();
+        header.setMsgType(MsgType.VERSION_NEGOTIATE);
+        header.setSerializationType(Serializer.JSON_SERIALIZATION);
+        packet.setHeader(header);
+        packet.setBody("1"); // 字符串 "1" → V1
+
+        channel.writeInbound(packet);
+
+        Byte negotiated = channel.attr(ChannelAttributes.NEGOTIATED_VERSION).get();
+        assertNotNull(negotiated, "协商版本不应为 null");
 
         channel.finish();
     }

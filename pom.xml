@@ -72,7 +72,7 @@
         <dependency>
             <groupId>com.google.guava</groupId>
             <artifactId>guava</artifactId>
-            <version>33.0.0-jre</version>
+            <version>32.1.3-jre</version>
         </dependency>
 
         <!-- Kafka -->
@@ -141,6 +141,24 @@
                         <goals>
                             <goal>compile</goal>
                         </goals>
+                    </execution>
+                </executions>
+            </plugin>
+            <!-- 依赖版本冲突检测：必须在构建阶段校验版本唯一性 -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-enforcer-plugin</artifactId>
+                <version>3.4.1</version>
+                <executions>
+                    <execution>
+                        <id>enforce-versions</id>
+                        <goals><goal>enforce</goal></goals>
+                        <configuration>
+                            <rules>
+                                <!-- 禁止 POM 中出现重复的依赖声明 -->
+                                <banDuplicatePomDependencyVersions/>
+                            </rules>
+                        </configuration>
                     </execution>
                 </executions>
             </plugin>

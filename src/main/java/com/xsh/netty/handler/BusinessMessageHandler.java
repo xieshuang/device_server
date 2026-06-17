@@ -6,6 +6,7 @@ import com.xsh.netty.kafka.KafkaMessageEnvelope;
 import com.xsh.netty.kafka.KafkaProducerService;
 import com.xsh.netty.protocol.MessagePacket;
 import com.xsh.netty.protocol.MsgType;
+import com.xsh.netty.serialize.Serializer;
 import com.xsh.netty.server.NettyServerProperties;
 import io.netty.channel.ChannelHandlerContext;
 import lombok.extern.slf4j.Slf4j;
@@ -13,6 +14,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 import java.nio.charset.StandardCharsets;
+import java.util.Base64;
 import java.util.HashMap;
 import java.util.Map;
 
@@ -65,16 +67,15 @@ public class BusinessMessageHandler implements MessageHandler {
             headers.put("version", String.valueOf(packet.getHeader().getVersion()));
             headers.put("sequenceId", String.valueOf(packet.getHeader().getSequenceId()));
 
-            // 2. 序列化 payload
+            // 2. 按序列化类型处理 payload
             String payload;
-            if (packet.getRawBody() != null) {
-                payload = new String(packet.getRawBody(), StandardCharsets.UTF_8);
-            } else if (packet.getBody() instanceof byte[] bytes) {
-                payload = new String(bytes, StandardCharsets.UTF_8);
-            } else if (packet.getBody() != null) {
-                payload = packet.getBody().toString();
+            byte[] rawBytes = resolveRawBytes(packet);
+            if (packet.getHeader().getSerializationType() == Serializer.PROTOBUF_SERIALIZATION) {
+                // Protobuf 二进制数据 → Base64 编码，避免 UTF-8 转码损坏数据
+                payload = rawBytes != null ? Base64.getEncoder().encodeToString(rawBytes) : "";
             } else {
-                payload = "";
+                // JSON / 心跳等文本数据 → UTF-8 字符串
+                payload = rawBytes != null ? new String(rawBytes, StandardCharsets.UTF_8) : "";
             }
 
             // 3. 构造信封并异步发送
@@ -96,5 +97,19 @@ public class BusinessMessageHandler implements MessageHandler {
 
         log.debug("业务消息已处理: deviceId={}, seqId={}", deviceId,
                 packet.getHeader().getSequenceId());
+    }
+
+    /**
+     * 从 MessagePacket 中提取原始字节数组。
+     * 优先 rawBody（解码器直接存入），其次 body（byte[] 类型），最后为空。
+     */
+    private byte[] resolveRawBytes(MessagePacket packet) {
+        if (packet.getRawBody() != null) {
+            return packet.getRawBody();
+        }
+        if (packet.getBody() instanceof byte[] bytes) {
+            return bytes;
+        }
+        return null;
     }
 }

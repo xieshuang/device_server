@@ -106,15 +106,23 @@ public class AuthHandler extends SimpleChannelInboundHandler<MessagePacket> {
         byte clientVersion;
         Object body = packet.getBody();
         if (body instanceof byte[] bytes) {
+            // 字节数组直接取第一个字节作为版本号（空数组默认 V2）
             clientVersion = bytes.length > 0 ? bytes[0] : VersionInfo.SERVER_MAX_VERSION;
         } else if (body instanceof String s) {
             try {
                 clientVersion = Byte.parseByte(s);
             } catch (NumberFormatException e) {
-                clientVersion = VersionInfo.SERVER_MAX_VERSION;
+                // 无法解析的版本号，关闭连接（不应默认为 V2）
+                log.warn("版本号解析失败: {}, 关闭连接", s);
+                ctx.close();
+                return;
             }
         } else {
-            clientVersion = VersionInfo.SERVER_MAX_VERSION;
+            // 未知的 Body 类型，无法提取版本号
+            log.warn("版本协商 Body 类型异常: {}, 关闭连接",
+                    body != null ? body.getClass().getName() : "null");
+            ctx.close();
+            return;
         }
 
         // 协商版本

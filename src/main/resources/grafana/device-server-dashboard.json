@@ -85,6 +85,35 @@
       "id": 9, "title": "限流拒绝趋势", "type": "timeseries",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 24 },
       "targets": [{ "expr": "rate(netty_rate_limited_total[5m])", "refId": "A", "legendFormat": "拒绝/s" }]
+    },
+    {
+      "id": 20, "title": "JVM 堆内存使用", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 24 },
+      "targets": [
+        { "expr": "jvm_memory_used_bytes{area=\"heap\"}", "refId": "A", "legendFormat": "已用" },
+        { "expr": "jvm_memory_max_bytes{area=\"heap\"}", "refId": "B", "legendFormat": "上限" }
+      ]
+    },
+    {
+      "id": 21, "title": "GC 频率与耗时", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 32 },
+      "targets": [
+        { "expr": "rate(jvm_gc_pause_seconds_count[5m])", "refId": "A", "legendFormat": "频率/s" },
+        { "expr": "rate(jvm_gc_pause_seconds_sum[5m])", "refId": "B", "legendFormat": "耗时/s" }
+      ]
+    },
+    {
+      "id": 22, "title": "JVM 线程数", "type": "timeseries",
+      "gridPos": { "h": 8, "w": 6, "x": 12, "y": 32 },
+      "targets": [
+        { "expr": "jvm_threads_live_threads", "refId": "A", "legendFormat": "活跃线程" },
+        { "expr": "jvm_threads_daemon_threads", "refId": "B", "legendFormat": "守护线程" }
+      ]
+    },
+    {
+      "id": 23, "title": "系统 CPU 使用率", "type": "stat",
+      "gridPos": { "h": 4, "w": 6, "x": 18, "y": 32 },
+      "targets": [{ "expr": "system_cpu_usage", "refId": "A", "legendFormat": "CPU" }]
     }
   ]
 }

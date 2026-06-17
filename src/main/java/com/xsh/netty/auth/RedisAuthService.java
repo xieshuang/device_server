@@ -4,6 +4,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Component;
 
+import jakarta.annotation.PostConstruct;
 import java.util.concurrent.CompletableFuture;
 
 /**
@@ -67,5 +68,26 @@ public class RedisAuthService implements AuthService {
                 return false;
             }
         });
+    }
+
+    /**
+     * 启动时校验 Redis 连接可用性，连接异常时打印告警日志但不阻塞启动。
+     *
+     * <p>设计：Redis 作为外部依赖，不可用时不应阻止应用启动（可能只是临时抖动）。
+     * 鉴权失败时已有防御性处理，因此此处仅告警。
+     */
+    @PostConstruct
+    void checkRedisConnectivity() {
+        try {
+            String pong = redisTemplate.getConnectionFactory()
+                    .getConnection().ping();
+            if ("PONG".equals(pong)) {
+                log.info("Redis 连接校验通过");
+            } else {
+                log.warn("Redis PING 返回异常: {}", pong);
+            }
+        } catch (Exception e) {
+            log.error("Redis 连接不可用，鉴权将全部失败: {}", e.getMessage());
+        }
     }
 }

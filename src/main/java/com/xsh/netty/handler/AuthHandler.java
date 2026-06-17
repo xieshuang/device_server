@@ -81,8 +81,9 @@ public class AuthHandler extends SimpleChannelInboundHandler<MessagePacket> {
             return;
         }
 
-        // 异步校验
-        authService.authenticate(authReq.getDeviceId(), authReq.getTimestamp(), authReq.getToken())
+        // 异步校验（V5 增加 nonce 防重放参数）
+        authService.authenticate(authReq.getDeviceId(), authReq.getTimestamp(),
+                        authReq.getToken(), authReq.getNonce())
                 .thenAccept(success -> {
                     // 确保在 EventLoop 线程中执行 Pipeline 操作
                     if (ctx.channel().eventLoop().inEventLoop()) {

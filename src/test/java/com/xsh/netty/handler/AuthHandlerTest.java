@@ -37,7 +37,7 @@ class AuthHandlerTest {
 
     @Test
     void testAuthSuccess_DeviceIdBound() {
-        when(authService.authenticate(anyString(), anyLong(), anyString()))
+        when(authService.authenticate(anyString(), anyLong(), anyString(), any()))
                 .thenReturn(CompletableFuture.completedFuture(true));
 
         EmbeddedChannel channel = new EmbeddedChannel();
@@ -66,7 +66,7 @@ class AuthHandlerTest {
 
     @Test
     void testAuthFail_WrongToken_Closes() {
-        when(authService.authenticate(anyString(), anyLong(), anyString()))
+        when(authService.authenticate(anyString(), anyLong(), anyString(), any()))
                 .thenReturn(CompletableFuture.completedFuture(false));
 
         EmbeddedChannel channel = new EmbeddedChannel();

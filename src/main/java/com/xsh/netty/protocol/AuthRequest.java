@@ -24,4 +24,8 @@ public class AuthRequest {
 
     /** 签名令牌：HMAC-MD5(deviceId + timestamp, productSecret) */
     private String token;
+
+    /** 防重放 nonce（V5 新增）：客户端生成的随机字符串，服务端通过 Redis SETNX 校验。
+     *  旧客户端不发送此字段时为 null，降级为仅 timestamp 校验 */
+    private String nonce;
 }

@@ -130,7 +130,8 @@ public class WebSocketBusinessHandler extends SimpleChannelInboundHandler<Binary
 
         // 异步鉴权
         container.getAuthService()
-                .authenticate(authReq.getDeviceId(), authReq.getTimestamp(), authReq.getToken())
+                .authenticate(authReq.getDeviceId(), authReq.getTimestamp(),
+                        authReq.getToken(), authReq.getNonce())
                 .thenAccept(success -> {
                     // 确保在 EventLoop 线程中执行 Channel 操作
                     if (ctx.channel().eventLoop().inEventLoop()) {

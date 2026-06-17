@@ -23,4 +23,14 @@ public interface AuthService {
      * @return CompletableFuture，true=鉴权通过，false=鉴权失败
      */
     CompletableFuture<Boolean> authenticate(String deviceId, long timestamp, String token);
+
+    /**
+     * V5 增强鉴权：增加 nonce 防重放参数（默认委托给三参数版本）。
+     *
+     * @param nonce 防重放随机数
+     */
+    default CompletableFuture<Boolean> authenticate(String deviceId, long timestamp,
+                                                     String token, String nonce) {
+        return authenticate(deviceId, timestamp, token);
+    }
 }

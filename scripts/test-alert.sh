@@ -8,7 +8,7 @@ set -euo pipefail
 
 THRESHOLD="${1:-50}"
 ALERT_FILE="${2:-TEST-ALERT.log}"
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 CSV_FILE="$PROJECT_DIR/target/site/jacoco/jacoco.csv"
 TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S')
 

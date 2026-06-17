@@ -9,7 +9,7 @@
 set -euo pipefail
 
 MODE="${1:-quick}"
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 REPORT_DIR="$PROJECT_DIR/target/site/jacoco"
 CSV_FILE="$REPORT_DIR/jacoco.csv"
 OUTPUT_FILE="$PROJECT_DIR/AUTO-TEST-REPORT.md"

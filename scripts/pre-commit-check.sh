@@ -7,7 +7,7 @@
 set -e
 
 echo "Running pre-commit test alert check..."
-bash test-alert.sh 50 /dev/null
+bash scripts/test-alert.sh 50 /dev/null
 
 EXIT=$?
 if [ $EXIT -ne 0 ]; then

@@ -5,6 +5,8 @@ import com.xsh.netty.protocol.MessagePacket;
 import com.xsh.netty.protocol.MsgType;
 import com.xsh.netty.serialize.Serializer;
 import io.netty.buffer.ByteBuf;
+
+import java.util.UUID;
 import io.netty.channel.ChannelHandlerContext;
 import io.netty.handler.codec.ByteToMessageDecoder;
 import lombok.extern.slf4j.Slf4j;
@@ -123,6 +125,8 @@ public class CustomProtocolDecoder extends ByteToMessageDecoder {
 
         MessagePacket packet = new MessagePacket();
         packet.setHeader(header);
+        // V5: 为每条消息生成全链路追踪 ID
+        packet.setTraceId(generateTraceId());
 
         // 心跳消息直接按字符串处理，不走序列化
         if (MsgType.isHeartbeat(msgType)) {
@@ -141,5 +145,12 @@ public class CustomProtocolDecoder extends ByteToMessageDecoder {
         }
 
         out.add(packet);
+    }
+
+    /**
+     * 生成短格式全链路追踪ID（UUID 去横线后截取 12 字符）。
+     */
+    private String generateTraceId() {
+        return UUID.randomUUID().toString().replace("-", "").substring(0, 12);
     }
 }

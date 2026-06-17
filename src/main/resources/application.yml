@@ -63,6 +63,12 @@ spring:
       linger-ms: 5
       enable-idempotence: true
 
+# Jasypt 配置加密（V5）
+# 密钥通过环境变量 JASYPT_ENCRYPTOR_PASSWORD 注入
+jasypt:
+  encryptor:
+    password: ${JASYPT_ENCRYPTOR_PASSWORD:}
+
 management:
   endpoints:
     web:

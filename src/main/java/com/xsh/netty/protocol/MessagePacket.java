@@ -26,4 +26,7 @@ public class MessagePacket {
      * {@link com.xsh.netty.serialize.Serializer#deserialize} 反序列化为具体 DTO。
      */
     private byte[] rawBody;
+
+    /** V5 全链路追踪ID，解码时生成，贯穿编解码→鉴权→Dispatcher→Kafka */
+    private String traceId;
 }

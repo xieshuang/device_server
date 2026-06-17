@@ -66,6 +66,10 @@ public class BusinessMessageHandler implements MessageHandler {
             headers.put("serializationType", String.valueOf(packet.getHeader().getSerializationType()));
             headers.put("version", String.valueOf(packet.getHeader().getVersion()));
             headers.put("sequenceId", String.valueOf(packet.getHeader().getSequenceId()));
+            // V5: 全链路追踪
+            if (packet.getTraceId() != null) {
+                headers.put("traceId", packet.getTraceId());
+            }
 
             // 2. 按序列化类型处理 payload
             String payload;

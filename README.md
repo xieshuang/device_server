@@ -1,8 +1,127 @@
 # Device Server - 工业级 Netty 多协议设备接入服务器
 
-基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持 DVSR 自定义协议、Modbus-TCP、OPC-UA、HTTP、WebSocket、MQTT 六种协议接入，内置设备鉴权、HasdedWheelTimer ACK、TCP 背压流控、IP 动态黑名单、优雅停机、分布式集群路由等生产级特性。
+基于 Spring Boot 3 + Netty 构建的工业级多协议设备接入服务器，支持 DVSR 自定义协议、Modbus-TCP、OPC-UA、HTTP、WebSocket、MQTT 六种协议接入，内置设备鉴权、HashedWheelTimer ACK、TCP 背压流控、IP 动态黑名单、优雅停机、分布式集群路由等生产级特性。
 
----
+## 技术架构图
+
+```mermaid
+flowchart TB
+    subgraph Device[设备接入层]
+        A[工业设备/传感器] -->|TCP/TLS| B[Netty Server :9000]
+        C[Web 客户端] -->|HTTP/WS| B
+        D[OPC-UA 客户端] -->|opc.tcp| B
+        E[MQTT 客户端] -->|mqtt://| B
+        F[Modbus 设备] -->|modbus-tcp| B
+    end
+
+    subgraph Pipeline[Netty Pipeline 防护链]
+        B --> G[IpFilterHandler<br/>IP 动态黑名单]
+        G --> H[ReadTimeoutHandler<br/>鉴权超时检测]
+        H --> I[BackpressureHandler<br/>TCP 背压流控]
+        I --> J[IdleStateHandler<br/>空闲检测]
+    end
+
+    subgraph Detector[MultiProtocolDetector 6协议嗅探]
+        J --> K{协议识别}
+        K -->|DVSR| L[AuthHandler<br/>HMAC+Nonce鉴权]
+        K -->|Modbus| M[ModbusDecoder/Encoder<br/>MBAP编解码]
+        K -->|OPC-UA| N[OpcUaBusinessHandler<br/>HEL/OPN/MSG]
+        K -->|HTTP/WS| O[HttpServerCodec<br/>WebSocket升级]
+        K -->|MQTT| P[MqttDecoder/Encoder<br/>CONNECT/PUB/SUB]
+    end
+
+    subgraph Business[业务处理层]
+        L --> Q[RateLimitHandler<br/>令牌桶限流]
+        Q --> R[CustomProtocolHandler<br/>心跳/ACK/分发]
+        M --> S[ModbusBusinessHandler<br/>6种功能码]
+        N --> T[OpcUaBusinessHandler<br/>状态机]
+        O --> U[WebSocketBusinessHandler<br/>鉴权+路由]
+        P --> V[MqttBusinessHandler<br/>QoS 0/1]
+    end
+
+    subgraph Dispatch[消息分发与持久化]
+        R --> W[MessageDispatcher]
+        S --> W
+        T --> W
+        U --> W
+        V --> W
+        W --> X[ThingModelHandler<br/>物模型转换]
+        X --> Y[BusinessMessageHandler]
+        Y --> Z[KafkaProducerService<br/>device-messages Topic]
+    end
+
+    subgraph Infra[基础设施]
+        Z --> AA[(Kafka)]
+        L --> AB[(Redis<br/>鉴权/Nonce/吊销/集群)]
+        G --> AB
+        AC[Prometheus] -->|scrape| AD[/actuator/prometheus]
+        AE[Grafana] -->|query| AC
+        AF[REST API :8080] -->|管理| AB
+    end
+
+    style A fill:#e1f5fe
+    style B fill:#fff3e0
+    style K fill:#f3e5f5
+    style AA fill:#e8f5e9
+    style AB fill:#fce4ec
+```
+
+> **协议优先级**: DVSR(0x44565352) → Modbus(MBAP) → OPC-UA(HEL/ACK/OPN) → HTTP/WS(GET/POST) → MQTT(CONNECT) → 未知(关闭+拉黑)
+
+### 数据流全景
+
+```mermaid
+sequenceDiagram
+    participant D as 设备
+    participant N as Netty Server
+    participant A as AuthHandler
+    participant R as RateLimitHandler
+    participant H as BusinessHandler
+    participant K as Kafka
+    participant Re as Redis
+
+    D->>N: TCP 连接
+    N->>N: IpFilter 检查黑名单
+    N->>N: MultiProtocolDetector 协议嗅探
+    D->>A: AUTH_REQ(deviceId + timestamp + token + nonce)
+    A->>Re: 吊销检查 / Nonce校验
+    A->>Re: 读取 productSecret
+    A->>A: HMAC-MD5 比对
+    A-->>D: AUTH_RESP
+    Note over A: 鉴权成功, 移除 AuthHandler
+
+    loop 心跳保活
+        D->>H: PING
+        H-->>D: PONG
+    end
+
+    D->>R: 业务消息(sequenceId > 0)
+    R->>R: 令牌桶限流检查
+    R->>H: 放行
+    H->>H: MessageDispatcher 路由
+    H->>H: ThingModelHandler 转换
+    H->>K: KafkaMessageEnvelope(traceId)
+    H-->>D: ACK
+```
+
+### 集群路由
+
+```mermaid
+sequenceDiagram
+    participant API as 业务系统
+    participant N1 as 网关 Node-1
+    participant N2 as 网关 Node-2
+    participant Re as Redis
+
+    API->>N1: sendToDevice(dev-001)
+    N1->>N1: 本地无 dev-001 Channel
+    N1->>Re: GET device:session:dev-001
+    Re-->>N1: nodeId = "Node-2"
+    N1->>Re: PUBLISH cluster:command:Node-2
+    Re-->>N2: 订阅消息到达
+    N2->>N2: 查本地 Channel
+    N2-->>API: writeAndFlush(msg)
+```
 
 ## 1. 技术栈
 

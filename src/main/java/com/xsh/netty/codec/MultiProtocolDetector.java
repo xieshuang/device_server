@@ -105,8 +105,16 @@ public class MultiProtocolDetector extends ByteToMessageDecoder {
             return;
         }
 
-        // 未知协议，直接关闭连接，防止恶意扫描
+        // 未知协议，记录失败次数（触发封禁阈值时自动拉黑），然后关闭连接
         log.warn("未知协议，来源：{}，关闭连接", ctx.channel().remoteAddress());
+        // 记录 IP 失败次数，超阈值自动封禁
+        try {
+            String ip = ((java.net.InetSocketAddress) ctx.channel().remoteAddress())
+                    .getAddress().getHostAddress();
+            handlerBeanContainer.getIpFirewallService().recordFailure(ip);
+        } catch (Exception e) {
+            log.debug("IP 失败记录异常: {}", e.getMessage());
+        }
         in.clear();
         ctx.close();
     }

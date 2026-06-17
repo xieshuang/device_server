@@ -3,12 +3,15 @@ package com.xsh.netty.config;
 import com.xsh.netty.auth.AuthService;
 import com.xsh.netty.codec.MultiProtocolDetector;
 import com.xsh.netty.handler.AuthHandler;
+import com.xsh.netty.handler.BackpressureHandler;
 import com.xsh.netty.handler.CustomProtocolHandler;
 import com.xsh.netty.handler.HttpBusinessHandler;
+import com.xsh.netty.handler.IpFilterHandler;
 import com.xsh.netty.handler.MqttBusinessHandler;
 import com.xsh.netty.ratelimit.RateLimitHandler;
 import com.xsh.netty.ratelimit.RateLimiterService;
 import com.xsh.netty.server.DeviceChannelManager;
+import com.xsh.netty.server.IpFirewallService;
 import com.xsh.netty.server.NettyServerProperties;
 import io.netty.bootstrap.ServerBootstrap;
 import io.netty.channel.*;
@@ -66,6 +69,7 @@ public class NettyServerBootstrap {
     private final AuthService authService;
     private final DeviceChannelManager channelManager;
     private final HandlerBeanContainer handlerBeanContainer;
+    private final IpFirewallService ipFirewallService;
 
     /** Acceptor 线程组，负责接收新连接（1个线程足够） */
     private EventLoopGroup bossGroup;
@@ -85,6 +89,9 @@ public class NettyServerBootstrap {
      */
     @PostConstruct
     public void start() throws Exception {
+        // V4 强防御：集群模式启用时 node-id 严禁留空
+        verifyClusterConfig();
+        
         boolean useEpoll = Epoll.isAvailable();
         log.info("Netty 服务启动中, Epoll 可用: {}", useEpoll);
 
@@ -131,6 +138,11 @@ public class NettyServerBootstrap {
                 .option(ChannelOption.SO_BACKLOG, properties.getSoBacklog())
                 .childOption(ChannelOption.SO_KEEPALIVE, true)
                 .childOption(ChannelOption.TCP_NODELAY, true)
+                // 背压流控高低水位配置（写缓冲区达到高水位时触发 channelWritabilityChanged）
+                .childOption(ChannelOption.WRITE_BUFFER_HIGH_WATER_MARK,
+                        properties.getBackpressureHighWaterMark())
+                .childOption(ChannelOption.WRITE_BUFFER_LOW_WATER_MARK,
+                        properties.getBackpressureLowWaterMark())
                 .childHandler(new ChannelInitializer<SocketChannel>() {
                     @Override
                     protected void initChannel(SocketChannel ch) {
@@ -141,8 +153,18 @@ public class NettyServerBootstrap {
                             pipeline.addLast(sslContext.newHandler(ch.alloc()));
                         }
 
+                        // 0.5 IP 黑名单过滤：三次握手后就绪，拒绝恶意 IP 接入
+                        if (properties.isIpFilterEnabled()) {
+                            pipeline.addLast(new IpFilterHandler(ipFirewallService));
+                        }
+
                         // 1. 鉴权超时：连接建立后超过此时间未发送鉴权请求则断开
                         pipeline.addLast(new ReadTimeoutHandler(properties.getAuthTimeoutSeconds(), TimeUnit.SECONDS));
+
+                        // 1.5 TCP 背压流控：基于 channelWritabilityChanged 双向驱动，反馈设备降频
+                        if (properties.isBackpressureEnabled()) {
+                            pipeline.addLast(new BackpressureHandler());
+                        }
 
                         // 2. 空闲状态检测：指定时间内无读数据则触发 IdleStateEvent
                         pipeline.addLast(new IdleStateHandler(
@@ -196,17 +218,43 @@ public class NettyServerBootstrap {
 
     /**
      * Spring 容器关闭时优雅停机。
+     *
+     * <p>停机流程：
+     * <ol>
+     *   <li>关闭监听端口，拒绝新连接</li>
+     *   <li>向所有在线设备广播维护通知</li>
+     *   <li>冲刷 Kafka 缓冲器（确保遗言投递）</li>
+     *   <li>关闭所有设备连接</li>
+     *   <li>释放 Netty 线程组资源</li>
+     * </ol>
      */
     @PreDestroy
     public void stop() {
-        log.info("Netty 服务关闭中...");
-        // 每个关闭操作独立 try-catch，确保一个异常不影响其他资源释放
-        silentClose(tlsServerChannel, "TLS Channel");
-        silentClose(serverChannel, "明文 Channel");
-        silentShutdown(bossGroup, "bossGroup");
-        silentShutdown(workerGroup, "workerGroup");
-        silentShutdown(businessGroup, "businessGroup");
-        log.info("Netty 服务已关闭");
+        log.info("================== 启动网关生产级优雅停机流程 ==================");
+        // 0. 关闭监听端口，拒绝任何新的物理连接连入
+        if (serverChannel != null) { serverChannel.close().syncUninterruptibly(); }
+        if (tlsServerChannel != null) { tlsServerChannel.close().syncUninterruptibly(); }
+
+        try {
+            // 1. 下发系统维护宣告消息给物理设备
+            channelManager.broadcastMaintenanceNotice();
+
+            // 2. 冲刷 Kafka 缓冲器，确保异步遗言持久化入盘
+            if (handlerBeanContainer.getKafkaProducerService() != null) {
+                handlerBeanContainer.getKafkaProducerService().flushBuffer(5, TimeUnit.SECONDS);
+            }
+        } catch (Exception e) {
+            log.error("优雅停机业务善后阶段遭遇异常: ", e);
+        } finally {
+            // 3. 强行下线清理本地全部残存 Channel 句柄
+            channelManager.closeAll();
+
+            // 4. 优雅释放 Netty 各层级线程组资源
+            if (bossGroup != null) bossGroup.shutdownGracefully(2, 5, TimeUnit.SECONDS);
+            if (workerGroup != null) workerGroup.shutdownGracefully(2, 5, TimeUnit.SECONDS);
+            if (businessGroup != null) businessGroup.shutdownGracefully(2, 5, TimeUnit.SECONDS);
+            log.info("================== 网关资源释放完毕，安全退出进程 ==================");
+        }
     }
 
     /** 安全关闭 Channel，异常不传递 */
@@ -228,6 +276,23 @@ public class NettyServerBootstrap {
             } catch (Exception e) {
                 log.error("关闭 {} 时异常: {}", name, e.getMessage());
             }
+        }
+    }
+
+    /**
+     * V4 强防御：集群模式启用时校验 node-id 不可为空。
+     */
+    private void verifyClusterConfig() {
+        if (properties.isClusterEnabled()) {
+            String nodeId = properties.getClusterNodeId();
+            if (nodeId == null || nodeId.trim().isEmpty()) {
+                log.error("=================================================================");
+                log.error(" 核心启动灾难错误: 网关已开启集群功能，但 netty.server.cluster-node-id 处于留空状态！");
+                log.error(" 系统拒绝启动以拦截未知时序路由崩溃风险。");
+                log.error("=================================================================");
+                throw new IllegalStateException("分布式集群配置节点标识异常：cluster-node-id 缺失");
+            }
+            log.info("集群节点标识校验通过: nodeId={}", nodeId);
         }
     }
 }

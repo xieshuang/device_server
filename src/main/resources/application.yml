@@ -28,6 +28,19 @@ netty:
     websocket-enabled: true
     websocket-path: /ws
     websocket-max-frame-size: 65536
+    # V4 新增配置
+    ack-timeout-ms: 30000               # ACK 确认超时（毫秒）
+    backpressure-enabled: true          # TCP 背压流控
+    backpressure-high-water-mark: 65536 # 背压高水位
+    backpressure-low-water-mark: 32768  # 背压低水位
+    ip-filter-enabled: true             # IP 动态黑名单
+    ip-filter-ban-threshold: 5          # 封禁阈值次数
+    ip-filter-ban-window-seconds: 60    # 统计窗口
+    ip-filter-ban-duration-minutes: 30  # 封禁时长
+    cluster-enabled: false              # 集群模式（默认关闭）
+    cluster-node-id: ""                 # 集群节点ID
+    cluster-session-ttl-seconds: 3600   # 集群会话TTL
+    thing-model-enabled: false          # 物模型开关
 
 spring:
   data:

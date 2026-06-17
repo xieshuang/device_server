@@ -77,4 +77,30 @@ public class NettyServerProperties {
     private String websocketPath = "/ws";
     /** WebSocket 最大帧大小 */
     private int websocketMaxFrameSize = 65536;
+
+    // ---- V4 新增配置 ----
+    /** ACK 确认超时时间（毫秒） */
+    private long ackTimeoutMs = 30000;
+    /** 背压开关 */
+    private boolean backpressureEnabled = true;
+    /** 背压写队列高水位（字节） */
+    private int backpressureHighWaterMark = 65536;
+    /** 背压写队列低水位（字节） */
+    private int backpressureLowWaterMark = 32768;
+    /** IP 过滤开关 */
+    private boolean ipFilterEnabled = true;
+    /** IP 封禁阈值次数 */
+    private int ipFilterBanThreshold = 5;
+    /** IP 封禁统计窗口（秒） */
+    private int ipFilterBanWindowSeconds = 60;
+    /** IP 封禁时长（分钟） */
+    private int ipFilterBanDurationMinutes = 30;
+    /** 集群模式开关 */
+    private boolean clusterEnabled = false;
+    /** 集群节点��一标识 */
+    private String clusterNodeId = "";
+    /** 集群会话 TTL（秒） */
+    private int clusterSessionTtlSeconds = 3600;
+    /** 物模型开关 */
+    private boolean thingModelEnabled = false;
 }

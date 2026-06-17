@@ -5,6 +5,7 @@ import com.xsh.netty.dispatcher.MessageDispatcher;
 import com.xsh.netty.kafka.KafkaProducerService;
 import com.xsh.netty.ratelimit.RateLimiterService;
 import com.xsh.netty.server.DeviceChannelManager;
+import com.xsh.netty.server.IpFirewallService;
 import com.xsh.netty.server.NettyServerProperties;
 import com.xsh.netty.server.PendingAckManager;
 import lombok.Getter;
@@ -45,6 +46,9 @@ public class HandlerBeanContainer {
     /** 限流服务，全局+单设备双维度令牌桶 */
     private final RateLimiterService rateLimiterService;
 
+    /** IP 防火墙服务，动态黑白名单管理 */
+    private final IpFirewallService ipFirewallService;
+
     /** 服务端配置属性 */
     private final NettyServerProperties properties;
 
@@ -58,6 +62,7 @@ public class HandlerBeanContainer {
                                  DeviceChannelManager channelManager,
                                  AuthService authService,
                                  RateLimiterService rateLimiterService,
+                                 IpFirewallService ipFirewallService,
                                  NettyServerProperties properties) {
         this.messageDispatcher = messageDispatcher;
         this.metricsBinder = metricsBinder;
@@ -65,6 +70,7 @@ public class HandlerBeanContainer {
         this.channelManager = channelManager;
         this.authService = authService;
         this.rateLimiterService = rateLimiterService;
+        this.ipFirewallService = ipFirewallService;
         this.properties = properties;
     }
 }

@@ -1,6 +1,9 @@
 package com.xsh.netty.server;
 
 import com.xsh.netty.protocol.ChannelAttributes;
+import com.xsh.netty.protocol.MessageHeader;
+import com.xsh.netty.protocol.MessagePacket;
+import com.xsh.netty.protocol.MsgType;
 import io.netty.channel.Channel;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
@@ -29,7 +32,7 @@ import java.util.concurrent.ConcurrentHashMap;
 @Component
 public class DeviceChannelManager {
 
-    /** deviceId → DeviceSession 映射 */
+    /** deviceId → DeviceSession 本地映射 */
     private final ConcurrentHashMap<String, DeviceSession> sessionMap = new ConcurrentHashMap<>();
 
     /**
@@ -112,5 +115,49 @@ public class DeviceChannelManager {
      */
     public Map<String, DeviceSession> getOnlineDevices() {
         return Collections.unmodifiableMap(sessionMap);
+    }
+
+    /**
+     * 向所有在线设备广播服务器维护通知。
+     *
+     * @param kafkaProducerService 用于异步投递离线遗言的 Kafka 服务（可为 null）
+     */
+    public void broadcastMaintenanceNotice() {
+        MessagePacket notice = new MessagePacket();
+        MessageHeader header = new MessageHeader();
+        header.setMsgType(MsgType.BUSINESS);
+        header.setSequenceId(0);
+        notice.setHeader(header);
+        notice.setBody("SERVER_MAINTENANCE: 网关正在维护，请稍后重连");
+
+        for (DeviceSession session : sessionMap.values()) {
+            Channel ch = session.getChannel();
+            if (ch != null && ch.isActive()) {
+                try {
+                    ch.writeAndFlush(notice);
+                } catch (Exception e) {
+                    log.debug("维护通知发送失败: deviceId={}", session.getDeviceId());
+                }
+            }
+        }
+        log.info("维护通知已广播，覆盖 {} 台在线设备", sessionMap.size());
+    }
+
+    /**
+     * 强制关闭所有在线设备连接。
+     */
+    public void closeAll() {
+        for (DeviceSession session : sessionMap.values()) {
+            Channel ch = session.getChannel();
+            if (ch != null && ch.isActive()) {
+                try {
+                    ch.close();
+                } catch (Exception e) {
+                    log.debug("关闭连接异常: deviceId={}", session.getDeviceId());
+                }
+            }
+        }
+        sessionMap.clear();
+        log.info("已关闭所有设备连接");
     }
 }

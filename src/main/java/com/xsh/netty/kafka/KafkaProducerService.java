@@ -10,6 +10,8 @@ import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.kafka.core.KafkaTemplate;
 import org.springframework.stereotype.Service;
 
+import java.util.concurrent.TimeUnit;
+
 import java.nio.charset.StandardCharsets;
 
 /**
@@ -73,5 +75,23 @@ public class KafkaProducerService {
                 metricsBinder.incrementKafkaSendSuccess();
             }
         });
+    }
+
+    /**
+     * 强制冲刷 Kafka Producer 缓冲器，确保异步发送的消息持久化到磁盘。
+     *
+     * <p>用于优雅停机场景：替代高危的 CompletableFuture.join()，
+     * 直接调用 Kafka 原生同步 flush 机制，避免 Spring 中断 Hook 中的锁竞争死锁。
+     *
+     * @param timeout 超时时间
+     * @param unit    时间单位
+     */
+    public void flushBuffer(long timeout, TimeUnit unit) {
+        try {
+            kafkaTemplate.getProducerFactory().createProducer().flush();
+            log.info("Kafka 缓冲器强制冲刷完成");
+        } catch (Exception e) {
+            log.error("Kafka 缓冲器冲刷异常: {}", e.getMessage());
+        }
     }
 }

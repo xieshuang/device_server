@@ -611,6 +611,10 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 6. **TLS 证书**：生产环境必须配置正式证书，不要使用自签名证书
 7. **Redis 高可用**：鉴权依赖 Redis，建议使用 Redis Sentinel 或 Cluster
 8. **鉴权密钥管理**：设备激活时通过业务系统将 productSecret 同步到 Redis，Netty 网关不直接管理密钥
+9. **Kafka 条件装配**：`kafka-enabled=false` 时 Kafka Bean 不创建，避免未配置 Kafka 导致启动失败
+10. **启动健康检查**：启动时校验 Redis PING，不可用时告警不阻塞
+11. **Grafana JVM 监控**：Dashboard 含堆内存/GC/线程/CPU 面板
+12. **maven-enforcer-plugin**：构建时检测重复依赖声明
 
 ---
 
@@ -628,13 +632,37 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 
 ## 11. 版本变更记录
 
-### V3.0 (当前)
+### V3.1 (当前) — 生产级安全与健壮性修复
+
+**P0 安全漏洞修复：**
+- **token 明文泄露**：`RedisAuthService` 删除 token 明文日志（log.info → log.debug 脱敏）
+- **WebSocket 鉴权补全**：从 TODO 存根实现完整鉴权流程（AuthRequest 反序列化 → AuthService 异步校验 → deviceId 绑定 → channelManager 注册）
+- **Kafka 条件装配**：`KafkaProducerConfig`/`KafkaProducerService` 增加 `@ConditionalOnProperty`，禁用时 Bean 不创建、应用不崩溃
+- **HandlerBeanContainer 可选依赖**：`KafkaProducerService` 改为 `@Autowired(required=false)` 注入
+- **安全默认值**：`kafka-enabled` 默认 `false`
+
+**P1 健壮性增强：**
+- **dispatch 异常保护**：`CustomProtocolHandler` BUSINESS 分支 try-catch，单消息异常不导致连接断开
+- **stop() 资源隔离**：`NettyServerBootstrap.stop()` 每个资源关闭独立 try-catch，确保全部释放
+- **日志级别优化**：`MultiProtocolDetector` 3处协议检测 info→debug，`AuthHandler` 版本协商 info→debug
+
+**P2 质量修复：**
+- **Protobuf 序列化区分**：`BusinessMessageHandler` 按 `serializationType` 区分处理（Protobuf→Base64 编码，JSON→UTF-8），body null 防御
+- **版本协商默认值**：`AuthHandler` NumberFormatException 不再默认 V2，改为关闭连接
+- **Guava 版本兼容**：降级到 32.1.3-jre（与 Spring Boot 3.2.5 兼容）
+
+**P3 运维增强：**
+- **JVM 指标面板**：Grafana Dashboard 新增 4 个面板（堆内存、GC 频率/耗时、线程数、CPU 使用率）
+- **Redis 启动校验**：`RedisAuthService` @PostConstruct 执行 PING 连通性检查
+- **依赖管理**：`maven-enforcer-plugin` banDuplicatePomDependencyVersions 规则
+
+### V3.0
 
 **新增功能：**
 - Kafka 消息持久化：BusinessMessageHandler → 统一Topic `device-messages`，deviceId 分区保序
 - 流量控制：全局+单设备双维度令牌桶（Guava RateLimiter），心跳不限流
 - WebSocket 支持：复用 HTTP 端口升级，二进制帧体与自定义协议共享 MessagePacket 格式
-- Grafana 看板：Dashboard JSON 模板，8 块面板覆盖所有核心指标
+- Grafana 看板：Dashboard JSON 模板，12 块面板覆盖连接/心跳/业务/鉴权/JVM 等核心指标
 - Protobuf 序列化：`serializationType=2` 自动路由，`.proto` 编译生成 Java 类
 - 协议版本协商：VERSION_NEGOTIATE(msgType=8) 动态协商，向后兼容
 - HandlerBeanContainer：解决 Netty Handler 无法注入 Spring Bean 的架构问题

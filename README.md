@@ -5,65 +5,59 @@
 ## 技术架构图
 
 ```mermaid
-flowchart TB
-    subgraph Device[设备接入层]
-        A[工业设备/传感器] -->|TCP/TLS| B[Netty Server :9000]
-        C[Web 客户端] -->|HTTP/WS| B
-        D[OPC-UA 客户端] -->|opc.tcp| B
-        E[MQTT 客户端] -->|mqtt://| B
-        F[Modbus 设备] -->|modbus-tcp| B
+graph TB
+    subgraph Device["设备接入层"]
+        A[工业设备/传感器] -->|"TCP/TLS"| B[Netty Server :9000]
+        C[Web 客户端] -->|"HTTP/WS"| B
+        D[OPC-UA 客户端] -->|"opc.tcp"| B
+        E[MQTT 客户端] -->|"mqtt://"| B
+        F[Modbus 设备] -->|"modbus-tcp"| B
     end
 
-    subgraph Pipeline[Netty Pipeline 防护链]
-        B --> G[IpFilterHandler<br/>IP 动态黑名单]
-        G --> H[ReadTimeoutHandler<br/>鉴权超时检测]
-        H --> I[BackpressureHandler<br/>TCP 背压流控]
-        I --> J[IdleStateHandler<br/>空闲检测]
+    subgraph Pipeline["Pipeline 防护链"]
+        B --> G["IpFilterHandler"]
+        G --> H["ReadTimeoutHandler"]
+        H --> I["BackpressureHandler"]
+        I --> J["IdleStateHandler"]
     end
 
-    subgraph Detector[MultiProtocolDetector 6协议嗅探]
-        J --> K{协议识别}
-        K -->|DVSR| L[AuthHandler<br/>HMAC+Nonce鉴权]
-        K -->|Modbus| M[ModbusDecoder/Encoder<br/>MBAP编解码]
-        K -->|OPC-UA| N[OpcUaBusinessHandler<br/>HEL/OPN/MSG]
-        K -->|HTTP/WS| O[HttpServerCodec<br/>WebSocket升级]
-        K -->|MQTT| P[MqttDecoder/Encoder<br/>CONNECT/PUB/SUB]
+    subgraph Detector["MultiProtocolDetector"]
+        J --> K{"6协议嗅探"}
+        K -->|"DVSR"| L["AuthHandler\n鉴权+Nonce"]
+        K -->|"Modbus"| M["ModbusHandler\nMBAP编解码"]
+        K -->|"OPC-UA"| N["OpcUaHandler\nHEL/OPN/MSG"]
+        K -->|"HTTP/WS"| O["HttpHandler\nWebSocket升级"]
+        K -->|"MQTT"| P["MqttHandler\nCONNECT/PUB"]
     end
 
-    subgraph Business[业务处理层]
-        L --> Q[RateLimitHandler<br/>令牌桶限流]
-        Q --> R[CustomProtocolHandler<br/>心跳/ACK/分发]
-        M --> S[ModbusBusinessHandler<br/>6种功能码]
-        N --> T[OpcUaBusinessHandler<br/>状态机]
-        O --> U[WebSocketBusinessHandler<br/>鉴权+路由]
-        P --> V[MqttBusinessHandler<br/>QoS 0/1]
+    subgraph Business["业务处理层"]
+        L --> Q["RateLimitHandler\n令牌桶限流"]
+        Q --> R["CustomProtocolHandler\n心跳/ACK/分发"]
+        M --> S["ModbusBusinessHandler\n6种功能码"]
+        N --> T["OpcUaBusinessHandler\n状态机"]
+        O --> U["WebSocketBusinessHandler\n鉴权+路由"]
+        P --> V["MqttBusinessHandler\nQoS 0/1"]
     end
 
-    subgraph Dispatch[消息分发与持久化]
-        R --> W[MessageDispatcher]
+    subgraph Dispatch["消息分发与持久化"]
+        R --> W["MessageDispatcher"]
         S --> W
         T --> W
         U --> W
         V --> W
-        W --> X[ThingModelHandler<br/>物模型转换]
-        X --> Y[BusinessMessageHandler]
-        Y --> Z[KafkaProducerService<br/>device-messages Topic]
+        W --> X["ThingModelHandler\n物模型转换"]
+        X --> Y["BusinessMessageHandler"]
+        Y --> Z["KafkaProducerService\nTopic: device-messages"]
     end
 
-    subgraph Infra[基础设施]
-        Z --> AA[(Kafka)]
-        L --> AB[(Redis<br/>鉴权/Nonce/吊销/集群)]
+    subgraph Infra["基础设施"]
+        Z --> AA["(Kafka集群)"]
+        L --> AB["(Redis)\n鉴权/Nonce/吊销/集群"]
         G --> AB
-        AC[Prometheus] -->|scrape| AD[/actuator/prometheus]
-        AE[Grafana] -->|query| AC
-        AF[REST API :8080] -->|管理| AB
+        AC["Prometheus"] -->|"scrape"| AD["/actuator/prometheus"]
+        AE["Grafana"] -->|"query"| AC
+        AF["REST API :8080"] -->|"管理"| AB
     end
-
-    style A fill:#e1f5fe
-    style B fill:#fff3e0
-    style K fill:#f3e5f5
-    style AA fill:#e8f5e9
-    style AB fill:#fce4ec
 ```
 
 > **协议优先级**: DVSR(0x44565352) → Modbus(MBAP) → OPC-UA(HEL/ACK/OPN) → HTTP/WS(GET/POST) → MQTT(CONNECT) → 未知(关闭+拉黑)
@@ -73,34 +67,33 @@ flowchart TB
 ```mermaid
 sequenceDiagram
     participant D as 设备
-    participant N as Netty Server
+    participant N as Netty
     participant A as AuthHandler
-    participant R as RateLimitHandler
-    participant H as BusinessHandler
+    participant R as RateLimiter
+    participant H as Handler
     participant K as Kafka
     participant Re as Redis
 
     D->>N: TCP 连接
-    N->>N: IpFilter 检查黑名单
-    N->>N: MultiProtocolDetector 协议嗅探
-    D->>A: AUTH_REQ(deviceId + timestamp + token + nonce)
-    A->>Re: 吊销检查 / Nonce校验
-    A->>Re: 读取 productSecret
+    N->>N: IP 黑名单检查
+    N->>N: 协议嗅探
+    D->>A: AUTH_REQ
+    A->>Re: 吊销检查
+    A->>Re: 读取密钥
     A->>A: HMAC-MD5 比对
     A-->>D: AUTH_RESP
-    Note over A: 鉴权成功, 移除 AuthHandler
 
-    loop 心跳保活
+    loop 心跳
         D->>H: PING
         H-->>D: PONG
     end
 
-    D->>R: 业务消息(sequenceId > 0)
-    R->>R: 令牌桶限流检查
+    D->>R: 业务消息
+    R->>R: 令牌桶限流
     R->>H: 放行
-    H->>H: MessageDispatcher 路由
-    H->>H: ThingModelHandler 转换
-    H->>K: KafkaMessageEnvelope(traceId)
+    H->>H: Dispatcher 路由
+    H->>H: 物模型转换
+    H->>K: traceId 信封
     H-->>D: ACK
 ```
 
@@ -113,14 +106,14 @@ sequenceDiagram
     participant N2 as 网关 Node-2
     participant Re as Redis
 
-    API->>N1: sendToDevice(dev-001)
-    N1->>N1: 本地无 dev-001 Channel
-    N1->>Re: GET device:session:dev-001
-    Re-->>N1: nodeId = "Node-2"
-    N1->>Re: PUBLISH cluster:command:Node-2
-    Re-->>N2: 订阅消息到达
+    API->>N1: 指令下发
+    N1->>N1: 本地无连接
+    N1->>Re: 查询路由表
+    Re-->>N1: Node-2
+    N1->>Re: PubSub 转发
+    Re-->>N2: 消息到达
     N2->>N2: 查本地 Channel
-    N2-->>API: writeAndFlush(msg)
+    N2-->>API: 投递成功
 ```
 
 ## 1. 技术栈

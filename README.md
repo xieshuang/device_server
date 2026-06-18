@@ -927,115 +927,16 @@ java -cp target/device-server-1.0.0-SNAPSHOT.jar com.xsh.netty.client.StressTest
 
 ## 11. 版本变更记录
 
-### V4.1 (当前) — 工业协议全覆盖
+> 完整版本历史详见 [CHANGELOG.md](./CHANGELOG.md)
 
-**阶段 6-8 新增：**
-- Modbus-TCP：MBAP 增强嗅探（b2/b3=0x0000 + b4=0x00）+ 6 种功能码（01/02/03/04/06/10）
-- OPC-UA：HEL/ACK/OPN/MSG/CLO/ERR 消息类型识别 + Eclipse Milo SDK 0.6.13
-- 物模型插件：ThingModelMessageHandler 接口 + ThingModelContext 上下文，零侵入自动装配
-- MultiProtocolDetector：6 协议全覆盖（DVSR/Modbus/OPC-UA/HTTP/WS/MQTT）
-
-### V4.0 — 生产级高并发基础
-
-**阶段 1-5 新增：**
-- HashedWheelTimer ACK：双 Map + LongAdder 替代 Caffeine，O(1) 超时检测，2048 槽位
-- TCP 背压流控：channelWritabilityChanged 双向驱动，高水位 64KB/低水位 32KB
-- IP 动态黑名单：Redis+Caffeine，60s/5次自动拉黑，fail-open 安全策略
-- 优雅停机：广播维护通知 + Kafka flush 冲刷 + shutdownGracefully 超时隔离
-- 分布式集群：ClusterSessionManager Lua 原子注销 + ClusterRouterService Pub/Sub 路由 + node-id 强防御
-- KafkaProducerService.flushBuffer()：替代 CompletableFuture.join() 避免死锁
-
-**新增依赖：** guava 32.1.3-jre（版本兼容调整）、Eclipse Milo 0.6.13
-
-### V3.1 — 生产级安全与健壮性修复
-
-**P0 安全漏洞修复：**
-- **token 明文泄露**：`RedisAuthService` 删除 token 明文日志（log.info → log.debug 脱敏）
-- **WebSocket 鉴权补全**：从 TODO 存根实现完整鉴权流程（AuthRequest 反序列化 → AuthService 异步校验 → deviceId 绑定 → channelManager 注册）
-- **Kafka 条件装配**：`KafkaProducerConfig`/`KafkaProducerService` 增加 `@ConditionalOnProperty`，禁用时 Bean 不创建、应用不崩溃
-- **HandlerBeanContainer 可选依赖**：`KafkaProducerService` 改为 `@Autowired(required=false)` 注入
-- **安全默认值**：`kafka-enabled` 默认 `false`
-
-**P1 健壮性增强：**
-- **dispatch 异常保护**：`CustomProtocolHandler` BUSINESS 分支 try-catch，单消息异常不导致连接断开
-- **stop() 资源隔离**：`NettyServerBootstrap.stop()` 每个资源关闭独立 try-catch，确保全部释放
-- **日志级别优化**：`MultiProtocolDetector` 3处协议检测 info→debug，`AuthHandler` 版本协商 info→debug
-
-**P2 质量修复：**
-- **Protobuf 序列化区分**：`BusinessMessageHandler` 按 `serializationType` 区分处理（Protobuf→Base64 编码，JSON→UTF-8），body null 防御
-- **版本协商默认值**：`AuthHandler` NumberFormatException 不再默认 V2，改为关闭连接
-- **Guava 版本兼容**：降级到 32.1.3-jre（与 Spring Boot 3.2.5 兼容）
-
-**P3 运维增强：**
-- **JVM 指标面板**：Grafana Dashboard 新增 4 个面板（堆内存、GC 频率/耗时、线程数、CPU 使用率）
-- **Redis 启动校验**：`RedisAuthService` @PostConstruct 执行 PING 连通性检查
-- **依赖管理**：`maven-enforcer-plugin` banDuplicatePomDependencyVersions 规则
-
-### V3.0
-
-**新增功能：**
-- Kafka 消息持久化：BusinessMessageHandler → 统一Topic `device-messages`，deviceId 分区保序
-- 流量控制：全局+单设备双维度令牌桶（Guava RateLimiter），心跳不限流
-- WebSocket 支持：复用 HTTP 端口升级，二进制帧体与自定义协议共享 MessagePacket 格式
-- Grafana 看板：Dashboard JSON 模板，12 块面板覆盖连接/心跳/业务/鉴权/JVM 等核心指标
-- Protobuf 序列化：`serializationType=2` 自动路由，`.proto` 编译生成 Java 类
-- 协议版本协商：VERSION_NEGOTIATE(msgType=8) 动态协商，向后兼容
-- HandlerBeanContainer：解决 Netty Handler 无法注入 Spring Bean 的架构问题
-- BusinessMessageHandler：Spring Bean 实现 MessageHandler 接口，Dispatcher 自动注册
-- RateLimitHandler：Pipeline 插入式限流，心跳不限流
-
-**遗留修复：**
-- CustomProtocolHandler BUSINESS 消息接入 MessageDispatcher
-- ACK 处理接入 PendingAckManager.ack()
-- NettyMetricsBinder 指标接入各 Handler（AuthHandler、CustomProtocolHandler）
-- 业务消息反序列化改为 byte[] 透传（延迟到 MessageHandler 按需执行）
-
-**新增依赖：**
-- guava（令牌桶限流 RateLimiter）
-- protobuf-java + protobuf-maven-plugin（Protobuf 序列化）
-
-**新增配置项：**
-- `netty.server.kafka-enabled` / `kafka-topic`
-- `netty.server.rate-limit-enabled` / `rate-limit-global-permits` / `rate-limit-device-permits` / `rate-limit-close-on-limit`
-- `netty.server.websocket-enabled` / `websocket-path` / `websocket-max-frame-size`
-- `spring.kafka.bootstrap-servers` / `producer.*`
-
-**新增 Grafana Dashboard：**
-- `src/main/resources/grafana/device-server-dashboard.json`
-
-### V2.0
-
-**协议变更：**
-- 协议帧头部从 11 字节扩展到 15 字节，新增 `sequenceId`(4字节) 字段
-- Version 字段默认值从 1 改为 2
-- 新增消息类型：AUTH_REQ(4)、AUTH_RESP(5)、AUTH_FAIL(6)、ACK(7)
-- 服务端自动兼容 V1（11字节头部）和 V2（15字节头部）协议
-
-**新增功能：**
-- 设备鉴权：HMAC-MD5 + Redis(Lettuce异步) + AuthHandler(鉴权后自动移除)
-- 连接管理：DeviceChannelManager（踢旧保新、定向推送、在线统计）
-- 消息确认：PendingAckManager（Caffeine TTL 30s，最大10万条）
-- TLS 加密：独立端口(9001) + SslHandler + 自签名证书兜底
-- 可观测性：Micrometer + Prometheus，9项核心指标
-- 消息路由：MessageDispatcher + MessageHandler 接口，Spring Bean 自动注册
-- 断线重连：客户端指数退避重连(1s→30s)，重连后自动重鉴权
-
-**新增依赖：**
-- spring-boot-starter-data-redis（Lettuce 异步客户端）
-- caffeine（本地缓存）
-- spring-kafka（消息持久化，P2 阶段启用）
-- spring-boot-starter-actuator + micrometer-registry-prometheus（可观测性）
-
-**新增配置项：**
-- `netty.server.tls-enabled` / `tls-port` / `tls-cert-path` / `tls-cert-password`
-- `netty.server.auth-timeout-seconds`
-- `spring.data.redis.*`
-- `management.endpoints.web.exposure.include`
-
-### V1.0
-
-- 自定义协议编解码（魔数 0x44565352 "DVSR"，11字节头部）
-- 多协议接入探测器（自定义协议 / HTTP / MQTT）
-- 心跳检测（5秒读空闲，3次断开）
-- Spring Boot 集成（配置外化、生命周期管理）
-- 交互式测试客户端 + 压力测试客户端
+| 版本 | 日期 | 核心变更 |
+|------|------|---------|
+| [v5.3.0](https://github.com/xieshuang/device_server/releases/tag/v5.3.0) | 2026-06-17 | Prometheus 11条告警 + Jasypt加密 + 压测基线 |
+| [v5.2.0](https://github.com/xieshuang/device_server/releases/tag/v5.2.0) | 2026-06-17 | MQTT 3.1.1完整协议 + 物模型V2脚本引擎 |
+| [v5.1.0](https://github.com/xieshuang/device_server/releases/tag/v5.1.0) | 2026-06-17 | 运维REST API + 测试补齐(130用例) |
+| [v5.0.0](https://github.com/xieshuang/device_server/releases/tag/v5.0.0) | 2026-06-17 | Nonce防重放 + 设备吊销 + traceId + Jasypt |
+| [v4.1.0](https://github.com/xieshuang/device_server/releases/tag/v4.1.0) | 2026-06-17 | Modbus-TCP + OPC-UA + 物模型插件 |
+| [v4.0.0](https://github.com/xieshuang/device_server/releases/tag/v4.0.0) | 2026-06-17 | HashedWheelTimer ACK + 背压 + IP过滤 + 优雅停机 + 集群 |
+| [v3.1.0](https://github.com/xieshuang/device_server/releases/tag/v3.1.0) | 2026-06-17 | P0-P3安全与健壮性修复 |
+| [v3.0.0](https://github.com/xieshuang/device_server/releases/tag/v3.0.0) | 2026-06-17 | Kafka持久化 + 限流 + WebSocket + Protobuf |
+| [v2.0.0](https://github.com/xieshuang/device_server/releases/tag/v2.0.0) | 2026-06-14 | 设备鉴权 + 连接管理 + 消息确认 + TLS
